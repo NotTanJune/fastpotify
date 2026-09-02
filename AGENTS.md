@@ -57,6 +57,20 @@ shows the signal post-equalizer and pre-volume: the EQ shapes what is
 heard so the picture follows it, and the volume knob never moves the
 picture. Zero volume still dances.
 
+## Issue communication
+
+- Write public replies for the reporter, not as an engineering investigation
+  log. Keep them short, direct, and in plain language.
+- A reply should move the issue forward: make the maintainer's decision, say
+  that a fix is planned or in progress, or ask for one specific thing needed
+  next. Include technical detail only when the reporter needs it to act.
+- Never post two maintainer comments in a row on the same issue or pull
+  request. If nobody has replied since the last maintainer comment, edit that
+  comment instead.
+- Keep private investigation notes out of the public thread. Do not post a
+  second comment merely to document more analysis.
+- Never use em dashes. Use a full stop, comma, colon, or parentheses instead.
+
 ## Branches
 
 Work on `main`. Commit there directly, one topic per commit, each

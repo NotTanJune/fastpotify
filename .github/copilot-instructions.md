@@ -39,6 +39,15 @@ Automated closure is limited to the first two cases above. A useful closing
 comment names the decision, links the canonical issue or documentation, and
 does not overstate what was verified.
 
+Write issue replies for the reporter, not as an engineering investigation
+log. Keep them short, direct, and in plain language. Each reply must move the
+issue forward by making a decision, stating that a fix is planned or in
+progress, or asking for one specific thing needed next. Include technical
+detail only when the reporter needs it to act. Never post two maintainer
+comments in a row on the same issue or pull request; edit the previous comment
+when nobody has replied since it. Keep additional investigation notes private.
+Never use em dashes; use a full stop, comma, colon, or parentheses instead.
+
 When a log shows Web API rate limits with `source=shared`, direct the user to
 https://fastpotify.rocks/make-it-even-faster/ for the personal Client ID setup.
 Make clear that this changes supported Web API quota only; it cannot fix a
