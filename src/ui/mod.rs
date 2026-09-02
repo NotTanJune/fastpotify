@@ -27,11 +27,6 @@ use crate::backend::AuthStatus;
 use crate::model::{Action, Page, ToastKind};
 use crate::theme::{self, Icon};
 
-/// Enough room for the compact track table to keep a title column. Side
-/// panels yield before the listening workspace becomes unusable.
-const MIN_WORKSPACE_WIDTH: f32 = 320.0;
-const MIN_CONTEXT_WIDTH: f32 = 240.0;
-
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     let ctx = &ctx;
@@ -48,20 +43,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
     player_bar::show(app, ui);
-    topbar::show(app, ui);
     if app.settings.sidebar_visible {
-        let context_reserve = if app.show_queue_panel || app.show_lyrics_panel {
-            MIN_CONTEXT_WIDTH
-        } else {
-            0.0
-        };
-        sidebar::show(app, ui, context_reserve);
+        sidebar::show(app, ui);
     }
     if app.show_queue_panel {
-        queue::side_panel(app, ui, MIN_WORKSPACE_WIDTH);
+        queue::side_panel(app, ui);
     }
     if app.show_lyrics_panel {
-        lyrics::side_panel(app, ui, MIN_WORKSPACE_WIDTH);
+        lyrics::side_panel(app, ui);
     }
     central(app, ui);
     devices::popup(app, ctx);
@@ -130,6 +119,7 @@ fn central(app: &mut App, ui: &mut egui::Ui) {
                 widgets::paint_vertical_gradient(ui, header, top, palette.window);
             }
             ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
+            topbar::show(app, ui);
             let page = app.page().clone();
             egui::ScrollArea::vertical()
                 .id_salt(("page", page.encode()))
@@ -167,7 +157,10 @@ fn central(app: &mut App, ui: &mut egui::Ui) {
 /// Makes `rect` drag the borderless window. Register it before child widgets so
 /// they keep their clicks.
 pub fn titlebar_drag(ui: &mut egui::Ui, rect: egui::Rect) {
-    if theme::titlebar_inset(ui.ctx()) == 0.0 {
+    let fullscreen = ui
+        .ctx()
+        .input(|input| input.viewport().fullscreen.unwrap_or(false));
+    if !cfg!(any(target_os = "macos", windows)) || fullscreen {
         return;
     }
     let response = ui.interact(
@@ -175,9 +168,8 @@ pub fn titlebar_drag(ui: &mut egui::Ui, rect: egui::Rect) {
         ui.id().with("titlebar-drag"),
         egui::Sense::click_and_drag(),
     );
-    // AppKit must start the move from the live mouse-down event. Waiting for
-    // egui's drag threshold makes the event stale. Native dragging consumes the
-    // gesture, so double-click zoom is unavailable here.
+    // Native dragging must start from the live mouse-down event. Waiting for
+    // egui's drag threshold makes the event stale.
     if response.is_pointer_button_down_on() && ui.input(|input| input.pointer.primary_pressed()) {
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
     }

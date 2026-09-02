@@ -26,15 +26,12 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
     contents(app, ui, false);
 }
 
-pub fn side_panel(app: &mut App, ui: &mut egui::Ui, workspace_reserve: f32) {
+pub fn side_panel(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
-    let max_width = (ui.available_width() - workspace_reserve).clamp(240.0, 560.0);
-    let min_width = theme::SIDE_PANEL_MIN_WIDTH.min(max_width);
-    let width_constrained = app.settings.queue_width > max_width;
     let panel = egui::Panel::right("queue-panel")
         .resizable(true)
         .default_size(app.settings.queue_width)
-        .size_range(min_width..=max_width)
+        .size_range(theme::SIDE_PANEL_MIN_WIDTH..=560.0)
         .show_separator_line(false)
         .frame(
             Frame::new()
@@ -95,15 +92,10 @@ pub fn side_panel(app: &mut App, ui: &mut egui::Ui, workspace_reserve: f32) {
             });
     });
     let width = response.response.rect.width();
-    if !width_constrained && (width - app.settings.queue_width).abs() > 1.0 {
+    if (width - app.settings.queue_width).abs() > 1.0 {
         app.settings.queue_width = width;
         app.actions.push(Action::SettingsChanged);
     }
-    ui.painter().vline(
-        response.response.rect.left() + 0.5,
-        response.response.rect.y_range(),
-        egui::Stroke::new(1.0, palette.outline.gamma_multiply(0.45)),
-    );
 }
 
 /// Saves the current and upcoming queue as a playlist.

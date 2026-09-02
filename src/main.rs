@@ -6,9 +6,6 @@ use fastpotify::{app, backend, paths, settings, single_instance, util};
 
 use clap::Parser;
 
-#[cfg(windows)]
-mod windows_caption;
-
 /// A fast, native Spotify client.
 #[derive(Debug, Parser)]
 #[command(name = "fastpotify", version, about)]
@@ -56,54 +53,10 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     demo_shot: Option<std::path::PathBuf>,
 
-    /// Set the demo window's inner size, e.g. `1240x800`. Useful with
-    /// `--demo-shot` for repeatable responsive-layout captures.
-    #[cfg(feature = "demo")]
-    #[arg(long, value_name = "WIDTHxHEIGHT", value_parser = parse_demo_size)]
-    demo_size: Option<[f32; 2]>,
-
     /// How long to let cover art download before the shot is taken.
     #[cfg(feature = "demo")]
     #[arg(long, value_name = "MS", default_value_t = 6000)]
     demo_shot_delay: u64,
-}
-
-#[cfg(feature = "demo")]
-fn parse_demo_size(value: &str) -> Result<[f32; 2], String> {
-    let Some((width, height)) = value.split_once(['x', 'X']) else {
-        return Err("expected WIDTHxHEIGHT, for example 1240x800".to_owned());
-    };
-    let width = width
-        .parse::<f32>()
-        .map_err(|_| "width must be a number".to_owned())?;
-    let height = height
-        .parse::<f32>()
-        .map_err(|_| "height must be a number".to_owned())?;
-    if !width.is_finite() || !height.is_finite() {
-        return Err("demo size must contain finite numbers".to_owned());
-    }
-    if width < 760.0 || height < 520.0 {
-        return Err("demo size must be at least 760x520".to_owned());
-    }
-    Ok([width, height])
-}
-
-#[cfg(all(test, feature = "demo"))]
-mod demo_size_tests {
-    use super::parse_demo_size;
-
-    #[test]
-    fn parses_supported_demo_sizes() {
-        assert_eq!(parse_demo_size("1240x800"), Ok([1240.0, 800.0]));
-        assert_eq!(parse_demo_size("760X520"), Ok([760.0, 520.0]));
-    }
-
-    #[test]
-    fn rejects_malformed_or_unsupported_demo_sizes() {
-        for value in ["760", "wide", "759x520", "760x519", "NaNx520"] {
-            assert!(parse_demo_size(value).is_err(), "accepted {value}");
-        }
-    }
 }
 
 /// Remote control of the running instance, for Raycast scripts, launchers,
@@ -428,9 +381,6 @@ fn main() -> eframe::Result<()> {
     if demo {
         fastpotify::demo::populate(&mut app);
         fastpotify::demo::apply_flags(&mut app, cli.demo_page.as_deref(), cli.demo_show.as_deref());
-        if let Some(size) = cli.demo_size {
-            app.set_demo_window_size(size);
-        }
     }
     #[cfg(feature = "demo")]
     let shot = cli.demo_shot.clone().map(|path| Shot {
@@ -448,16 +398,10 @@ fn main() -> eframe::Result<()> {
             let guard = slot.lock().unwrap_or_else(|p| p.into_inner());
             MiniWindow::wanted(guard.as_ref().expect("application state present"))
         };
-        #[cfg(windows)]
-        let has_native_caption = mini.is_none();
         #[cfg(feature = "demo")]
-        let options = native_options(
-            shot.is_some() && cli.demo_size.is_none() && mini.is_none(),
-            mini,
-            cli.demo_size,
-        );
+        let options = native_options(shot.is_some() && mini.is_none(), mini);
         #[cfg(not(feature = "demo"))]
-        let options = native_options(false, mini, None);
+        let options = native_options(false, mini);
         eframe::run_native(
             "Fastpotify",
             options,
@@ -481,10 +425,6 @@ fn main() -> eframe::Result<()> {
                 Ok(Box::new(Shell {
                     app: Some(app),
                     slot: std::sync::Arc::clone(&creator_slot),
-                    #[cfg(windows)]
-                    caption: has_native_caption
-                        .then(|| windows_caption::Caption::new(cc))
-                        .flatten(),
                     #[cfg(feature = "demo")]
                     shot: creator_shot.clone(),
                 }))
@@ -605,11 +545,11 @@ impl MiniWindow {
     }
 }
 
-fn native_options(
-    fullscreen: bool,
-    mini: Option<MiniWindow>,
-    requested_size: Option<[f32; 2]>,
-) -> eframe::NativeOptions {
+const fn main_window_decorated(on_windows: bool) -> bool {
+    !on_windows
+}
+
+fn native_options(fullscreen: bool, mini: Option<MiniWindow>) -> eframe::NativeOptions {
     let icon = if cfg!(target_os = "macos") {
         // macOS takes the dock icon from the bundle's .icns, which is the
         // 1024px drawing with the platform's rounding. Setting a window
@@ -618,14 +558,9 @@ fn native_options(
     } else {
         app_icon()
     };
-    let app_id = if requested_size.is_some() {
-        "fastpotify-demo-capture"
-    } else {
-        "fastpotify"
-    };
     let viewport = egui::ViewportBuilder::default()
         .with_title("Fastpotify")
-        .with_app_id(app_id)
+        .with_app_id("fastpotify")
         .with_icon(icon);
     let viewport = match mini {
         Some(mini) => {
@@ -655,15 +590,15 @@ fn native_options(
             .with_fullsize_content_view(true)
             .with_titlebar_shown(false)
             .with_title_shown(false)
-            .with_inner_size(requested_size.unwrap_or([1240.0, 800.0]))
+            // Windows has no equivalent to macOS's floating traffic lights.
+            // Removing its decorations lets the app surface fill the window.
+            .with_decorations(main_window_decorated(cfg!(windows)))
+            .with_inner_size([1240.0, 800.0])
             .with_min_inner_size([760.0, 520.0])
             .with_fullscreen(fullscreen),
     };
     eframe::NativeOptions {
         viewport,
-        // A requested demo size is evidence: `App::attach` receives the same
-        // override, and eframe must not save the throwaway geometry either.
-        persist_window: requested_size.is_none(),
         // A Wayland compositor stops sending frame callbacks to a hidden
         // window; waiting for vsync there would block the event loop.
         // Repaints are event-driven, so nothing spins.
@@ -675,14 +610,31 @@ fn native_options(
     }
 }
 
+#[cfg(test)]
+mod native_window_tests {
+    use super::*;
+
+    #[test]
+    fn main_window_uses_the_platform_decoration_policy() {
+        let options = native_options(false, None);
+        assert_eq!(options.viewport.decorations, Some(!cfg!(windows)));
+        assert_eq!(options.viewport.fullsize_content_view, Some(true));
+        assert_eq!(options.viewport.titlebar_shown, Some(false));
+        assert_eq!(options.viewport.title_shown, Some(false));
+    }
+
+    #[test]
+    fn only_windows_removes_the_native_frame() {
+        assert!(!main_window_decorated(true));
+        assert!(main_window_decorated(false));
+    }
+}
+
 /// The eframe adapter around the long-lived [`app::App`]: delegates frames
 /// and, when the window goes away, hands the state back for the next window.
 struct Shell {
     app: Option<app::App>,
     slot: std::sync::Arc<std::sync::Mutex<Option<app::App>>>,
-    /// The standard Windows frame, colored to continue the app surface.
-    #[cfg(windows)]
-    caption: Option<windows_caption::Caption>,
     /// A pending `--demo-shot` capture, if this is a screenshot run.
     #[cfg(feature = "demo")]
     shot: Option<Shot>,
@@ -816,10 +768,6 @@ impl eframe::App for Shell {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if let Some(app) = self.app.as_mut() {
             app.frame_ui(ui);
-            #[cfg(windows)]
-            if let Some(caption) = &mut self.caption {
-                caption.apply(app.palette);
-            }
         }
     }
 
