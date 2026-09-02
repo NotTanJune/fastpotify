@@ -700,9 +700,17 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                 let droppable = entry.liked || entry.editable;
                 let drop_hover = drop_target == Some(index);
                 let active = entry.folder.is_none() && entry.page == current_page;
+                // Liked Songs has no URI of its own here; Spotify plays it
+                // as the account's collection context.
                 let playing = context_playing
-                    && !entry.uri.is_empty()
-                    && playing_context.as_deref() == Some(entry.uri.as_str());
+                    && if entry.liked {
+                        playing_context
+                            .as_deref()
+                            .is_some_and(|context| context.ends_with(":collection"))
+                    } else {
+                        !entry.uri.is_empty()
+                            && playing_context.as_deref() == Some(entry.uri.as_str())
+                    };
                 let pinned =
                     !entry.uri.is_empty() && app.settings.pinned_contexts.contains(&entry.uri);
                 let (rect, response) = ui.allocate_exact_size(

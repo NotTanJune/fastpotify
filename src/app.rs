@@ -745,8 +745,17 @@ impl App {
         if let Some(assumed) = &self.assumed_context {
             let held = assumed.at.elapsed() < ASSUMED_CONTEXT_HOLD;
             // A filtered or sorted context plays as plain tracks and will not
-            // report a context URI. Keep the assumed URI unless contradicted.
-            let contradicted = remote.as_deref().is_some_and(|uri| uri != assumed.uri);
+            // report a context URI. Keep the assumed URI unless contradicted
+            // by a poll taken since the request: one from before it still
+            // tells the story from before, whatever device it describes.
+            let contradicted = self.remote.as_ref().is_some_and(|snapshot| {
+                snapshot.received_at > assumed.at
+                    && snapshot
+                        .state
+                        .context
+                        .as_ref()
+                        .is_some_and(|context| context.uri != assumed.uri)
+            });
             if held || (!contradicted && self.believed_playing()) {
                 return (!assumed.uri.is_empty()).then(|| assumed.uri.clone());
             }
@@ -5812,6 +5821,48 @@ mod tests {
         );
 
         assert_eq!(app.playing_context_uri(), None);
+    }
+
+    /// The playlist just started stays lit after the first seconds even
+    /// while the last poll, taken before the click, still names what the
+    /// phone was playing; only a poll from after the click may say
+    /// otherwise.
+    #[test]
+    fn a_poll_from_before_the_click_does_not_move_the_sidebar_light() {
+        // #given a poll from the phone's playlist, then a playlist started here
+        let mut app = headless_app();
+        app.remote = Some(RemoteSnapshot {
+            state: PlaybackState {
+                context: Some(crate::api::models::Context {
+                    uri: "spotify:playlist:phone".into(),
+                    ..Default::default()
+                }),
+                is_playing: true,
+                ..Default::default()
+            },
+            received_at: Instant::now() - Duration::from_secs(30),
+        });
+        app.assumed_context = Some(AssumedContext {
+            uri: "spotify:playlist:here".into(),
+            shuffle: None,
+            at: Instant::now() - ASSUMED_CONTEXT_HOLD - Duration::from_secs(1),
+        });
+        app.optimistic_playing = Some((true, Instant::now()));
+
+        // #then the hold is over, yet the stale poll does not win
+        assert_eq!(
+            app.playing_context_uri().as_deref(),
+            Some("spotify:playlist:here")
+        );
+
+        // #when a poll taken after the click still reports the phone's playlist
+        app.remote.as_mut().expect("a snapshot").received_at = Instant::now();
+
+        // #then Spotify's word from after the click stands
+        assert_eq!(
+            app.playing_context_uri().as_deref(),
+            Some("spotify:playlist:phone")
+        );
     }
 
     #[test]
