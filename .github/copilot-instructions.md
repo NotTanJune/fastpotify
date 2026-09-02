@@ -63,6 +63,15 @@ boundaries as blockers. In particular, flag alternate sources for Spotify
 audio, DRM circumvention, embedded browser engines, telemetry, and hosted
 Fastpotify services.
 
+Start every review by stating `User-visible UI impact: none` or by listing the
+visible changes. Treat changes to navigation, control placement, menu grouping,
+the application shell, window chrome, panel sizing, responsive breakpoints,
+spacing, or visual hierarchy as an interface redesign, not an internal
+refactor. Call this out even when the code is correct. A redesign requires
+explicit maintainer approval of its visual scope and before-and-after evidence
+at representative sizes in light and dark themes. Do not infer visual approval
+from permission to assess code quality.
+
 Check that behavioural changes have focused tests and that user-visible
 settings, files, and network access are documented. For UI changes, ask for
 visual evidence when the pull request does not provide it. Do not spend review

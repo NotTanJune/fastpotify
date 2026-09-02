@@ -74,6 +74,20 @@ picture. Zero volume still dances.
   second comment merely to document more analysis.
 - Never use em dashes. Use a full stop, comma, colon, or parentheses instead.
 
+## Interface review
+
+- Distinguish an internal UI refactor from an interface redesign. Moving
+  navigation or controls, regrouping menus, changing the application shell,
+  window chrome, panel ownership or sizing, responsive breakpoints, spacing,
+  or visual hierarchy is a redesign even when behavior still works.
+- Call out every user-visible interface change at the top of a pull request
+  review. Correct code and green CI do not make a redesign merge-ready.
+- Require explicit maintainer approval of the visual scope before merging an
+  interface redesign. Conditional approval to assess code quality is not
+  approval of changed appearance or interaction.
+- Inspect before-and-after evidence at representative window sizes and in both
+  light and dark themes. If that evidence is missing, request it.
+
 ## Branches
 
 Work on `main`. Commit there directly, one topic per commit, each
