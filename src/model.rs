@@ -162,6 +162,8 @@ impl<T> Loadable<T> {
 #[derive(Clone, Debug)]
 pub struct PagedList<T> {
     pub items: Vec<T>,
+    /// Spotify offset of the first item. Nonzero for a directly opened page.
+    pub base_offset: u32,
     pub total: Option<u32>,
     pub next_offset: Option<u32>,
     pub loading: bool,
@@ -174,6 +176,7 @@ impl<T> Default for PagedList<T> {
     fn default() -> Self {
         Self {
             items: Vec::new(),
+            base_offset: 0,
             total: None,
             next_offset: Some(0),
             loading: false,
@@ -197,15 +200,20 @@ impl<T> PagedList<T> {
     }
 
     pub fn is_complete(&self) -> bool {
-        self.loaded_once && self.next_offset.is_none()
+        self.loaded_once && self.base_offset == 0 && self.next_offset.is_none()
     }
 
     pub fn absorb(&mut self, offset: u32, page: Page_<T>) {
         if offset == 0 {
             self.items.clear();
+            self.base_offset = 0;
+        } else if !self.loaded_once {
+            self.items.clear();
+            self.base_offset = offset;
         }
-        if (offset as usize) < self.items.len() {
-            self.items.truncate(offset as usize);
+        let relative = offset.saturating_sub(self.base_offset) as usize;
+        if relative < self.items.len() {
+            self.items.truncate(relative);
         }
         let next_offset = page.next_offset();
         self.items.extend(page.items);
@@ -234,10 +242,11 @@ impl<T> PagedList<T> {
         }
     }
 
-    pub fn set_cached(&mut self, items: Vec<T>) {
-        self.total = Some(items.len() as u32);
+    pub fn restore_cached(&mut self, items: Vec<T>, total: u32, next_offset: Option<u32>) {
         self.items = items;
-        self.next_offset = None;
+        self.base_offset = 0;
+        self.total = Some(total);
+        self.next_offset = next_offset;
         self.loading = false;
         self.loaded_once = true;
         self.error = None;
@@ -248,6 +257,12 @@ impl<T> PagedList<T> {
         self.loading = false;
         self.error = Some(error);
         self.loaded_once = true;
+    }
+
+    pub fn reset_at(&mut self, offset: u32) {
+        self.reset();
+        self.base_offset = offset;
+        self.next_offset = Some(offset);
     }
 }
 
@@ -392,6 +407,8 @@ pub struct SearchState {
 #[derive(Default)]
 pub struct PlaylistPage {
     pub generation: u64,
+    /// Generation that produced the rows, which may lag during refresh.
+    pub items_generation: u64,
     pub playlist: Loadable<Playlist>,
     pub items: PagedList<PlaylistItem>,
     pub filter: String,
@@ -399,10 +416,26 @@ pub struct PlaylistPage {
     pub contributors: std::collections::BTreeSet<String>,
     /// Whether contributors were sampled from the final page.
     pub tail_checked: bool,
-    /// Whether the complete disk cache matches the live snapshot.
-    pub cache_complete: bool,
+    /// Whether this generation's disk cache read has finished.
+    pub cache_checked: bool,
+    /// The Spotify offset through which this snapshot is saved on disk.
+    pub cache_saved_through: Option<u32>,
+    /// End of the prefix restored for this generation. An initial response
+    /// below it is stale and must not replace the longer cached prefix.
+    pub cache_restored_through: Option<u32>,
     /// Items read from disk, waiting for the live snapshot to confirm.
-    pub pending_cache: Option<(String, Vec<PlaylistItem>)>,
+    pub pending_cache: Option<PlaylistCache>,
+    /// One-based position entered in the direct page control.
+    pub jump_position: u32,
+}
+
+/// A contiguous playlist prefix on disk, valid for exactly one snapshot.
+#[derive(Clone, Debug)]
+pub struct PlaylistCache {
+    pub snapshot: String,
+    pub items: Vec<PlaylistItem>,
+    pub total: u32,
+    pub next_offset: Option<u32>,
 }
 
 #[derive(Default)]
@@ -652,6 +685,10 @@ pub enum Action {
     SetSearchFilter(SearchFilter),
     FocusSearch,
     LoadMore(Page),
+    JumpToPlaylistPosition {
+        id: String,
+        position: u32,
+    },
     LoadMoreRecents,
     ReloadRecents,
     SetQueueTab(QueueTab),

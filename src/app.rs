@@ -1112,16 +1112,21 @@ impl App {
                 Event::PlaylistCache {
                     account_id,
                     id,
-                    snapshot,
-                    items,
+                    generation,
+                    cache,
                 } => {
                     if self.user_id() != Some(account_id.as_str()) {
                         continue;
                     }
                     if let Some(page) = self.playlist_pages.get_mut(&id) {
-                        page.pending_cache = Some((snapshot, items));
+                        if page.generation != generation {
+                            continue;
+                        }
+                        page.cache_checked = true;
+                        page.pending_cache = cache;
                     }
                     self.try_adopt_playlist_cache(&id);
+                    self.checkpoint_playlist_cache(&id);
                 }
                 Event::UserName { id, name } => {
                     self.set_user_name(id, name);
@@ -2203,10 +2208,12 @@ impl App {
                         offset: 0,
                         generation,
                     });
-                    // The disk may hold the whole list already; it is
-                    // adopted only if Spotify's snapshot still matches.
-                    self.backend
-                        .send(Command::LoadPlaylistCache { id: id.clone() });
+                    // Disk progress is adopted only if Spotify's snapshot
+                    // still matches.
+                    self.backend.send(Command::LoadPlaylistCache {
+                        id: id.clone(),
+                        generation,
+                    });
                 }
                 self.request_contains(vec![format!("spotify:playlist:{id}")]);
             }
@@ -2406,6 +2413,15 @@ impl App {
                 }
             }
             Page::Playlist(id) => {
+                let restart_from_top = self.playlist_pages.get(&id).is_some_and(|page| {
+                    page.items.base_offset > 0
+                        && (!page.filter.trim().is_empty()
+                            || self.table_sorts.contains_key(&Page::Playlist(id.clone())))
+                });
+                if restart_from_top {
+                    self.load_playlist_items_at(&id, 0);
+                    return;
+                }
                 if let Some(page) = self.playlist_pages.get_mut(&id) {
                     let list = &mut page.items;
                     if let Some(offset) = list.next_offset.filter(|_| list.can_load_more()) {
@@ -2445,6 +2461,46 @@ impl App {
         }
     }
 
+    fn load_playlist_items_at(&mut self, id: &str, offset: u32) {
+        let generation = {
+            let Some(page) = self.playlist_pages.get_mut(id) else {
+                return;
+            };
+            self.load_generation += 1;
+            page.generation = self.load_generation;
+            page.items.reset_at(offset);
+            page.items.loading = true;
+            page.tail_checked = false;
+            page.cache_restored_through = None;
+            page.pending_cache = None;
+            page.cache_checked = true;
+            page.generation
+        };
+        self.clear_picked_rows();
+        self.backend.api(ApiRequest::PlaylistItems {
+            id: id.to_string(),
+            offset,
+            generation,
+        });
+    }
+
+    fn jump_to_playlist_position(&mut self, id: &str, position: u32) {
+        let Some(total) = self
+            .playlist_pages
+            .get(id)
+            .and_then(|page| page.items.total)
+            .filter(|total| *total > 0)
+        else {
+            return;
+        };
+        let position = position.clamp(1, total);
+        let offset = ((position - 1) / PLAYLIST_PAGE_SIZE) * PLAYLIST_PAGE_SIZE;
+        if let Some(page) = self.playlist_pages.get_mut(id) {
+            page.jump_position = position;
+        }
+        self.load_playlist_items_at(id, offset);
+    }
+
     fn reload(&mut self, page: Page) {
         match &page {
             Page::Home => self.load_home(true),
@@ -2459,7 +2515,8 @@ impl App {
                     self.load_generation += 1;
                     playlist.generation = self.load_generation;
                     playlist.items.loading = true;
-                    playlist.cache_complete = false;
+                    playlist.cache_checked = true;
+                    playlist.cache_restored_through = None;
                     playlist.pending_cache = None;
                     self.backend.api(ApiRequest::Playlist {
                         id: id.clone(),
@@ -3197,9 +3254,22 @@ impl App {
                     self.tint_for(Some(image));
                 }
                 if let Some(page) = self.playlist_pages.get_mut(&id) {
+                    let old_snapshot = page
+                        .playlist
+                        .get()
+                        .and_then(|playlist| playlist.snapshot_id.as_deref());
+                    let new_snapshot = result
+                        .as_ref()
+                        .ok()
+                        .and_then(|playlist| playlist.snapshot_id.as_deref());
+                    if old_snapshot.is_some() && old_snapshot != new_snapshot {
+                        page.cache_saved_through = None;
+                        page.cache_restored_through = None;
+                    }
                     page.playlist.refresh(result);
                 }
                 self.try_adopt_playlist_cache(&id);
+                self.checkpoint_playlist_cache(&id);
             }
             ApiResponse::PlaylistItems {
                 id,
@@ -3218,9 +3288,12 @@ impl App {
                 let mut adders: Vec<String> = Vec::new();
                 if let Some(page) = self.playlist_pages.get_mut(&id) {
                     match result {
-                        Ok(_) if page.cache_complete => {
-                            // A page in flight from before the cache
-                            // adopted; the list is already whole.
+                        _ if page
+                            .cache_restored_through
+                            .is_some_and(|cached| offset < cached) =>
+                        {
+                            // The initial request was already in flight when
+                            // a longer cached prefix was restored.
                         }
                         Ok(items) => {
                             uris = items
@@ -3237,42 +3310,15 @@ impl App {
                                 .collect();
                             page.contributors.extend(adders.iter().cloned());
                             page.items.absorb(offset, items);
-                            // The rows load from the top, and songs a friend
-                            // added often sit at the end; look there once.
-                            if !page.tail_checked {
-                                page.tail_checked = true;
-                                let loaded = page.items.items.len() as u32;
-                                if let Some(total) =
-                                    page.items.total.filter(|total| *total > loaded)
-                                {
-                                    self.backend.api(ApiRequest::PlaylistSample {
-                                        id: id.clone(),
-                                        offset: total.saturating_sub(PLAYLIST_PAGE_SIZE),
-                                        generation,
-                                    });
-                                }
-                            }
+                            page.items_generation = generation;
                         }
                         Err(error) => page.items.fail(friendly_page_error(&error)),
                     }
                 }
                 self.request_contains(uris);
                 self.request_user_names(adders);
-                // The whole list is here; remember it under its snapshot.
-                if let Some(page) = self.playlist_pages.get(&id)
-                    && page.items.is_complete()
-                    && !page.cache_complete
-                    && let Some(snapshot) = page
-                        .playlist
-                        .get()
-                        .and_then(|playlist| playlist.snapshot_id.clone())
-                {
-                    self.backend.send(Command::StorePlaylistCache {
-                        id: id.clone(),
-                        snapshot,
-                        items: page.items.items.clone(),
-                    });
-                }
+                self.sample_playlist_tail(&id);
+                self.checkpoint_playlist_cache(&id);
                 // A sorted table means the whole list, not the loaded part.
                 if self.table_sorts.contains_key(&Page::Playlist(id.clone())) {
                     self.load_more(Page::Playlist(id));
@@ -3365,7 +3411,8 @@ impl App {
                             page.items.reset();
                             page.contributors.clear();
                             page.tail_checked = false;
-                            page.cache_complete = false;
+                            page.cache_saved_through = None;
+                            page.cache_restored_through = None;
                             page.pending_cache = None;
                         }
                         if matches!(self.page(), Page::Playlist(current) if *current == id) {
@@ -3384,7 +3431,7 @@ impl App {
                             page.items.reset();
                             page.contributors.clear();
                             page.tail_checked = false;
-                            page.cache_complete = false;
+                            page.cache_restored_through = None;
                             page.pending_cache = None;
                         }
                         self.ensure_loaded(Page::Playlist(id));
@@ -4138,9 +4185,7 @@ impl App {
         }
     }
 
-    /// Adopt a playlist's disk cache once both it and the live playlist
-    /// are here and Spotify's snapshot still matches; a stale cache is
-    /// discarded, never shown.
+    /// Adopt a playlist's cached prefix once Spotify confirms its snapshot.
     fn try_adopt_playlist_cache(&mut self, id: &str) {
         let mut uris = Vec::new();
         let mut adders: Vec<String> = Vec::new();
@@ -4153,7 +4198,7 @@ impl App {
                 return;
             };
             match &page.pending_cache {
-                Some((held, _)) if *held == snapshot_now => {}
+                Some(cache) if cache.snapshot == snapshot_now => {}
                 Some(_) => {
                     // The playlist changed since; the cache is history.
                     page.pending_cache = None;
@@ -4161,29 +4206,117 @@ impl App {
                 }
                 None => return,
             }
-            if page.items.is_complete() || page.cache_complete {
+            let Some(cache) = page.pending_cache.take() else {
+                return;
+            };
+            let cached_through = cache.next_offset.unwrap_or(cache.total);
+            let loaded_through = if page.items.loaded_once {
+                page.items
+                    .next_offset
+                    .unwrap_or(page.items.total.unwrap_or(0))
+            } else {
+                0
+            };
+            if loaded_through >= cached_through {
+                page.cache_saved_through = Some(cached_through);
                 page.pending_cache = None;
                 return;
             }
-            let Some((_, items)) = page.pending_cache.take() else {
-                return;
-            };
-            uris = items
+            uris = cache
+                .items
                 .iter()
                 .filter_map(|item| item.playable())
                 .map(|item| item.uri().to_string())
                 .collect();
-            adders = items
+            adders = cache
+                .items
                 .iter()
                 .filter_map(|item| item.added_by.as_ref()?.id.clone())
                 .filter(|id| !id.is_empty())
                 .collect();
             page.contributors.extend(adders.iter().cloned());
-            page.items.set_cached(items);
-            page.cache_complete = true;
+            page.items
+                .restore_cached(cache.items, cache.total, cache.next_offset);
+            page.items_generation = page.generation;
+            page.cache_saved_through = Some(cached_through);
+            page.cache_restored_through = Some(cached_through);
         }
         self.request_contains(uris);
         self.request_user_names(adders);
+        self.sample_playlist_tail(id);
+        if self
+            .table_sorts
+            .contains_key(&Page::Playlist(id.to_string()))
+        {
+            self.load_more(Page::Playlist(id.to_string()));
+        }
+    }
+
+    /// Read the final page once for collaborators when the loaded rows do not
+    /// already include it. This also runs after a disk cache wins startup.
+    fn sample_playlist_tail(&mut self, id: &str) {
+        let request = self.playlist_pages.get_mut(id).and_then(|page| {
+            if page.tail_checked || !page.items.loaded_once {
+                return None;
+            }
+            page.tail_checked = true;
+            let loaded_end = page
+                .items
+                .base_offset
+                .saturating_add(page.items.items.len().try_into().unwrap_or(u32::MAX));
+            let total = page.items.total.filter(|total| *total > loaded_end)?;
+            Some(ApiRequest::PlaylistSample {
+                id: id.to_string(),
+                offset: total.saturating_sub(PLAYLIST_PAGE_SIZE),
+                generation: page.generation,
+            })
+        });
+        if let Some(request) = request {
+            self.backend.api(request);
+        }
+    }
+
+    /// Save useful playlist progress without writing the growing file after
+    /// every 50-item request. The first page, every ten pages after that, and
+    /// the completed list are checkpoints.
+    fn checkpoint_playlist_cache(&mut self, id: &str) {
+        const CHECKPOINT_ITEMS: u32 = PLAYLIST_PAGE_SIZE * 10;
+
+        let command = self.playlist_pages.get_mut(id).and_then(|page| {
+            let snapshot = page
+                .playlist
+                .get()
+                .and_then(|playlist| playlist.snapshot_id.clone())?;
+            if !page.items.loaded_once
+                || page.items.items.is_empty()
+                || page.items.base_offset != 0
+                || page.items_generation != page.generation
+            {
+                return None;
+            }
+            if !page.cache_checked {
+                return None;
+            }
+            let total = page.items.total?;
+            let next_offset = page.items.next_offset;
+            let through = next_offset.unwrap_or(total);
+            let previous = page.cache_saved_through.unwrap_or(0);
+            let complete = next_offset.is_none();
+            if previous > 0 && through.saturating_sub(previous) < CHECKPOINT_ITEMS && !complete {
+                return None;
+            }
+            page.cache_saved_through = Some(through);
+            Some(Command::StorePlaylistCache {
+                id: id.to_string(),
+                snapshot,
+                items: page.items.items.clone(),
+                total,
+                next_offset,
+            })
+        });
+        if let Some(command) = command {
+            self.backend.send(command);
+        }
     }
 
     /// Play what was playing when the app last closed. `false` when
@@ -4837,7 +4970,11 @@ impl App {
                     .and_then(|page| page.playlist.get())
                     .and_then(|playlist| playlist.snapshot_id.clone());
                 if let Some(page) = self.playlist_pages.get_mut(&playlist_id) {
-                    page.items.reorder(from as usize, to as usize);
+                    let base = page.items.base_offset;
+                    if from >= base && to >= base {
+                        page.items
+                            .reorder((from - base) as usize, (to - base) as usize);
+                    }
                 }
                 self.playlist_busy = true;
                 self.backend.api(ApiRequest::ReorderPlaylist {
@@ -4930,6 +5067,9 @@ impl App {
                 }
             }
             Action::LoadMore(page) => self.load_more(page),
+            Action::JumpToPlaylistPosition { id, position } => {
+                self.jump_to_playlist_position(&id, position)
+            }
             Action::LoadMoreRecents => self.load_more_recents(),
             Action::ReloadRecents => self.reload_recents(),
             Action::SetQueueTab(tab) => {
@@ -7140,6 +7280,321 @@ mod tests {
         );
         app.local_ready = true;
         app
+    }
+
+    fn cached_playlist_row(uri: &str) -> crate::api::models::PlaylistItem {
+        crate::api::models::PlaylistItem {
+            item: Some(PlayableItem::Track(Track {
+                uri: uri.to_string(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_matching_partial_playlist_cache_resumes_at_its_next_page() {
+        let mut app = headless_app();
+        app.backend.set_offline(true);
+        app.playlist_pages.insert(
+            "large".into(),
+            PlaylistPage {
+                generation: 7,
+                playlist: Loadable::Loaded(Playlist {
+                    snapshot_id: Some("current".into()),
+                    ..Default::default()
+                }),
+                items: PagedList {
+                    loading: true,
+                    ..Default::default()
+                },
+                pending_cache: Some(PlaylistCache {
+                    snapshot: "current".into(),
+                    items: vec![
+                        cached_playlist_row("spotify:track:one"),
+                        cached_playlist_row("spotify:track:two"),
+                    ],
+                    total: 10_000,
+                    next_offset: Some(500),
+                }),
+                cache_checked: true,
+                ..Default::default()
+            },
+        );
+
+        app.try_adopt_playlist_cache("large");
+
+        let page = &app.playlist_pages["large"];
+        assert_eq!(page.items.items.len(), 2);
+        assert_eq!(page.items.total, Some(10_000));
+        assert_eq!(page.items.next_offset, Some(500));
+        assert_eq!(page.cache_saved_through, Some(500));
+        assert_eq!(page.cache_restored_through, Some(500));
+        assert!(page.items.can_load_more());
+        assert_eq!(
+            app.backend.take_playlist_sample_requests(),
+            vec![("large".into(), 9_950, 7)],
+            "restoring a prefix still samples the final page once"
+        );
+
+        // The offset-zero request starts alongside the cache read. Its late
+        // answer must not replace the longer prefix that was restored.
+        app.handle_api(ApiResponse::PlaylistItems {
+            id: "large".into(),
+            offset: 0,
+            generation: 7,
+            result: Ok(crate::api::models::Page {
+                items: vec![cached_playlist_row("spotify:track:stale")],
+                total: 10_000,
+                limit: PLAYLIST_PAGE_SIZE,
+                offset: 0,
+                next: Some("next".into()),
+            }),
+        });
+        let page = &app.playlist_pages["large"];
+        assert_eq!(page.items.items.len(), 2);
+        assert_eq!(
+            page.items.items[0].playable().map(PlayableItem::uri),
+            Some("spotify:track:one")
+        );
+        assert_eq!(page.items.next_offset, Some(500));
+    }
+
+    #[test]
+    fn a_partial_playlist_cache_from_an_old_snapshot_is_not_shown() {
+        let mut app = headless_app();
+        app.backend.set_offline(true);
+        app.playlist_pages.insert(
+            "changed".into(),
+            PlaylistPage {
+                playlist: Loadable::Loaded(Playlist {
+                    snapshot_id: Some("new".into()),
+                    ..Default::default()
+                }),
+                pending_cache: Some(PlaylistCache {
+                    snapshot: "old".into(),
+                    items: vec![cached_playlist_row("spotify:track:old")],
+                    total: 10_000,
+                    next_offset: Some(500),
+                }),
+                cache_checked: true,
+                ..Default::default()
+            },
+        );
+
+        app.try_adopt_playlist_cache("changed");
+
+        let page = &app.playlist_pages["changed"];
+        assert!(page.items.items.is_empty());
+        assert!(page.pending_cache.is_none());
+        assert_eq!(page.cache_saved_through, None);
+        assert_eq!(page.cache_restored_through, None);
+    }
+
+    #[test]
+    fn playlist_cache_checkpoints_are_periodic_and_include_completion() {
+        let mut app = headless_app();
+        app.backend.set_offline(true);
+        app.playlist_pages.insert(
+            "large".into(),
+            PlaylistPage {
+                playlist: Loadable::Loaded(Playlist {
+                    snapshot_id: Some("current".into()),
+                    ..Default::default()
+                }),
+                items: PagedList {
+                    items: vec![cached_playlist_row("spotify:track:one")],
+                    total: Some(10_000),
+                    next_offset: Some(50),
+                    loaded_once: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        app.checkpoint_playlist_cache("large");
+        assert_eq!(
+            app.playlist_pages["large"].cache_saved_through, None,
+            "a short new prefix must not overwrite a longer cache before it is read"
+        );
+        app.playlist_pages
+            .get_mut("large")
+            .expect("the playlist")
+            .cache_checked = true;
+        app.checkpoint_playlist_cache("large");
+        assert_eq!(app.playlist_pages["large"].cache_saved_through, Some(50));
+
+        app.playlist_pages
+            .get_mut("large")
+            .expect("the playlist")
+            .items
+            .next_offset = Some(100);
+        app.checkpoint_playlist_cache("large");
+        assert_eq!(
+            app.playlist_pages["large"].cache_saved_through,
+            Some(50),
+            "one more page is too small to rewrite the growing cache"
+        );
+
+        app.playlist_pages
+            .get_mut("large")
+            .expect("the playlist")
+            .items
+            .next_offset = Some(550);
+        app.checkpoint_playlist_cache("large");
+        assert_eq!(app.playlist_pages["large"].cache_saved_through, Some(550));
+
+        let page = app.playlist_pages.get_mut("large").expect("the playlist");
+        page.items.total = Some(575);
+        page.items.next_offset = None;
+        app.checkpoint_playlist_cache("large");
+        assert_eq!(
+            app.playlist_pages["large"].cache_saved_through,
+            Some(575),
+            "the final short interval is still saved"
+        );
+    }
+
+    #[test]
+    fn a_distant_playlist_position_needs_one_direct_request() {
+        let mut app = headless_app();
+        app.backend.set_offline(true);
+        app.playlist_pages.insert(
+            "large".into(),
+            PlaylistPage {
+                generation: 3,
+                playlist: Loadable::Loaded(Playlist {
+                    snapshot_id: Some("current".into()),
+                    ..Default::default()
+                }),
+                items: PagedList {
+                    items: vec![cached_playlist_row("spotify:track:first")],
+                    total: Some(10_000),
+                    next_offset: Some(50),
+                    loaded_once: true,
+                    ..Default::default()
+                },
+                items_generation: 3,
+                cache_checked: true,
+                tail_checked: true,
+                ..Default::default()
+            },
+        );
+        let _ = app.backend.take_playlist_item_requests();
+
+        app.apply(
+            Action::JumpToPlaylistPosition {
+                id: "large".into(),
+                position: 6_907,
+            },
+            &egui::Context::default(),
+        );
+
+        let requests = app.backend.take_playlist_item_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].0, "large");
+        assert_eq!(requests[0].1, 6_900);
+        let generation = requests[0].2;
+        let page = &app.playlist_pages["large"];
+        assert_eq!(page.generation, generation);
+        assert_eq!(page.items.base_offset, 6_900);
+        assert_eq!(page.items.next_offset, Some(6_900));
+        assert!(page.items.items.is_empty());
+
+        app.handle_api(ApiResponse::PlaylistItems {
+            id: "large".into(),
+            offset: 6_900,
+            generation,
+            result: Ok(crate::api::models::Page {
+                items: vec![cached_playlist_row("spotify:track:6901")],
+                total: 10_000,
+                limit: PLAYLIST_PAGE_SIZE,
+                offset: 6_900,
+                next: Some("next".into()),
+            }),
+        });
+        let page = &app.playlist_pages["large"];
+        assert_eq!(page.items.base_offset, 6_900);
+        assert_eq!(page.items.items.len(), 1);
+        assert_eq!(page.items_generation, generation);
+
+        // Filtering keeps its existing whole-list meaning. It restarts from
+        // the beginning instead of pretending the distant window is all.
+        app.playlist_pages
+            .get_mut("large")
+            .expect("the playlist")
+            .filter = "track".into();
+        let _ = app.backend.take_playlist_item_requests();
+        app.load_more(Page::Playlist("large".into()));
+        let requests = app.backend.take_playlist_item_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].1, 0);
+        assert_eq!(app.playlist_pages["large"].items.base_offset, 0);
+    }
+
+    #[test]
+    fn refresh_metadata_cannot_cache_rows_from_the_previous_generation() {
+        let mut app = headless_app();
+        app.backend.set_offline(true);
+        app.playlist_pages.insert(
+            "changed".into(),
+            PlaylistPage {
+                generation: 9,
+                items_generation: 8,
+                playlist: Loadable::Loaded(Playlist {
+                    snapshot_id: Some("old".into()),
+                    ..Default::default()
+                }),
+                items: PagedList {
+                    items: vec![cached_playlist_row("spotify:track:old")],
+                    total: Some(500),
+                    next_offset: Some(50),
+                    loaded_once: true,
+                    ..Default::default()
+                },
+                cache_checked: true,
+                tail_checked: true,
+                ..Default::default()
+            },
+        );
+
+        app.handle_api(ApiResponse::Playlist {
+            id: "changed".into(),
+            generation: 9,
+            result: Ok(Playlist {
+                snapshot_id: Some("new".into()),
+                ..Default::default()
+            }),
+        });
+
+        let page = &app.playlist_pages["changed"];
+        assert_eq!(page.cache_saved_through, None);
+        assert_eq!(page.items_generation, 8);
+        assert_eq!(
+            page.items.items[0].playable().map(PlayableItem::uri),
+            Some("spotify:track:old")
+        );
+
+        app.handle_api(ApiResponse::PlaylistItems {
+            id: "changed".into(),
+            offset: 0,
+            generation: 9,
+            result: Ok(crate::api::models::Page {
+                items: vec![cached_playlist_row("spotify:track:new")],
+                total: 500,
+                limit: PLAYLIST_PAGE_SIZE,
+                offset: 0,
+                next: Some("next".into()),
+            }),
+        });
+        let page = &app.playlist_pages["changed"];
+        assert_eq!(page.items_generation, 9);
+        assert_eq!(page.cache_saved_through, Some(50));
+        assert_eq!(
+            page.items.items[0].playable().map(PlayableItem::uri),
+            Some("spotify:track:new")
+        );
     }
 
     /// Shuffle picks a random loaded track or Web API offset. Local librespot

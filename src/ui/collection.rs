@@ -271,12 +271,44 @@ pub fn actions_row(
     ui.add_space(14.0);
 }
 
+fn playlist_position_jump(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    id: &str,
+    total: u32,
+    base_offset: u32,
+    position: &mut u32,
+) {
+    if *position == 0 || *position > total {
+        *position = base_offset.saturating_add(1).min(total);
+    }
+    ui.horizontal(|ui| {
+        theme::text(ui, "Go to song", theme::medium(13.0), app.palette.secondary);
+        let field = ui.add(
+            egui::DragValue::new(position)
+                .range(1..=total)
+                .speed(10)
+                .max_decimals(0),
+        );
+        let submitted = field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+        if submitted || theme::soft_button(ui, &app.palette, None, "Go", false).clicked() {
+            app.actions.push(Action::JumpToPlaylistPosition {
+                id: id.to_string(),
+                position: *position,
+            });
+        }
+    });
+    ui.add_space(8.0);
+}
+
 /// One table row's data: the item, when it was added, who added it.
 pub type TableItem = (PlayableItem, Option<String>, Option<String>);
 
 /// A track table with virtualised rows and paging.
 pub struct Table<'a> {
     pub items: &'a [TableItem],
+    /// Spotify index represented by the first item.
+    pub row_offset: u32,
     pub context: RowContext,
     pub show_album: bool,
     pub show_cover: bool,
@@ -463,6 +495,7 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
     let mut pick = None;
     widgets::virtual_rows(ui, entry.visible.len(), row_height, |ui, row| {
         let index = entry.visible[row];
+        let actual_index = absolute_row_index(table.row_offset, index);
         let (item, added_at, added_by) = &table.items[index];
         // Shift neighboring rows around the current drop slot.
         let shift = ui.ctx().animate_value_with_time(
@@ -478,8 +511,8 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
             ui,
             app,
             TrackRow {
-                index: if sorted { row } else { index },
-                number: Some(if sorted { row + 1 } else { index + 1 }),
+                index: if sorted { row } else { actual_index },
+                number: Some(if sorted { row + 1 } else { actual_index + 1 }),
                 item,
                 context: &context,
                 show_cover,
@@ -517,7 +550,7 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
             && let Some(track) = egui::DragAndDrop::take_payload::<DragTrack>(ui.ctx())
             && let Some((playlist_id, from)) = track.from.clone()
         {
-            let to = slot as u32;
+            let to = table.row_offset.saturating_add(slot as u32);
             // The slot is Spotify's insert_before, exactly what the
             // action's handler sends; a row dropped back on its own
             // edges moves nothing.
@@ -561,6 +594,10 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
             table.can_load_more && !table.loading,
         );
     }
+}
+
+fn absolute_row_index(row_offset: u32, local_index: usize) -> usize {
+    (row_offset as usize).saturating_add(local_index)
 }
 
 /// The indices of `items` as a view presents them: filtered by `needle`
@@ -704,6 +741,7 @@ pub fn top_songs(app: &mut App, ui: &mut egui::Ui) {
         ui,
         Table {
             items: &items,
+            row_offset: 0,
             context: RowContext::Uris(uris),
             show_album: true,
             show_cover: true,
@@ -830,6 +868,20 @@ pub fn playlist(app: &mut App, ui: &mut egui::Ui, id: &str) {
                 },
                 Some(&mut page.filter),
             );
+            if page.items.base_offset > 0 && !page.filter.trim().is_empty() {
+                app.actions
+                    .push(Action::LoadMore(Page::Playlist(id.to_string())));
+            }
+            if count > crate::backend::PLAYLIST_PAGE_SIZE && sort.is_none() && needle.is_empty() {
+                playlist_position_jump(
+                    app,
+                    ui,
+                    id,
+                    count,
+                    page.items.base_offset,
+                    &mut page.jump_position,
+                );
+            }
             let editable = app
                 .can_edit_playlist(playlist)
                 .then(|| (playlist.id.clone(), playlist.snapshot_id.clone()));
@@ -838,6 +890,7 @@ pub fn playlist(app: &mut App, ui: &mut egui::Ui, id: &str) {
                 ui,
                 Table {
                     items: &items,
+                    row_offset: page.items.base_offset,
                     context: RowContext::Context {
                         uri: playlist.uri.clone(),
                         editable_playlist: editable,
@@ -926,6 +979,7 @@ pub fn album(app: &mut App, ui: &mut egui::Ui, id: &str) {
                 ui,
                 Table {
                     items: &items,
+                    row_offset: 0,
                     context: RowContext::Context {
                         uri: album.uri.clone(),
                         editable_playlist: None,
@@ -1133,6 +1187,7 @@ pub fn liked(app: &mut App, ui: &mut egui::Ui) {
         ui,
         Table {
             items: &items,
+            row_offset: 0,
             context,
             show_album: true,
             show_cover: true,
@@ -1312,5 +1367,11 @@ mod tests {
 
         // Cache miss on user_names_revision change
         assert_ne!(cache.user_names_revision, 3);
+    }
+
+    #[test]
+    fn a_direct_playlist_page_keeps_spotify_row_numbers() {
+        assert_eq!(absolute_row_index(6_900, 0) + 1, 6_901);
+        assert_eq!(absolute_row_index(6_900, 6) + 1, 6_907);
     }
 }
