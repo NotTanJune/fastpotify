@@ -163,6 +163,9 @@ pub struct LocalState {
     pub volume: u16,
     pub shuffle: bool,
     pub repeat: RepeatMode,
+    /// The librespot engine's Spotify session is alive. Connect device
+    /// activity is separate: Spotify may make this device inactive while the
+    /// session remains ready to be activated by the next load.
     pub connected: bool,
     pub username: String,
     pub active_client: String,
@@ -724,11 +727,10 @@ fn apply_event(state: &mut LocalState, event: PlayerEvent) -> bool {
             changed |= set(&mut state.username, user_name);
             changed
         }
-        PlayerEvent::SessionDisconnected { .. } => {
-            let mut changed = set(&mut state.connected, false);
-            changed |= set(&mut state.active_client, String::new());
-            changed
-        }
+        // In librespot this event means the Connect device became inactive,
+        // usually because another device took over. The engine session is
+        // still alive, and `Load` activates it again before starting a track.
+        PlayerEvent::SessionDisconnected { .. } => set(&mut state.active_client, String::new()),
         PlayerEvent::SessionClientChanged { client_name, .. } => {
             set(&mut state.active_client, client_name)
         }
@@ -993,6 +995,30 @@ mod tests {
             },
         );
         assert_eq!(state.playback, Playback::Playing);
+    }
+
+    /// Spotify making this Connect device inactive must not be mistaken for
+    /// the engine session ending. A later playlist load can activate the same
+    /// Spirc instance; marking it disconnected makes the UI hold that load
+    /// forever while waiting for a reconnect that will never happen.
+    #[test]
+    fn an_inactive_connect_device_keeps_its_engine_session() {
+        let mut state = LocalState {
+            connected: true,
+            active_client: "Fastpotify".into(),
+            ..LocalState::default()
+        };
+
+        assert!(apply_event(
+            &mut state,
+            PlayerEvent::SessionDisconnected {
+                connection_id: "connection".into(),
+                user_name: "listener".into(),
+            },
+        ));
+
+        assert!(state.connected, "the Spotify session is still usable");
+        assert!(state.active_client.is_empty());
     }
 
     #[test]
