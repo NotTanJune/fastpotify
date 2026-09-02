@@ -123,7 +123,7 @@
               pname = "fastpotify";
               version = (pkgs.lib.importTOML ./Cargo.toml).package.version;
               src = self;
-              hash = "sha256-e/uJwqYszz7ASo5elWcTIX6Smb0xJgQZA5fgHuwvzaE=";
+              hash = "sha256-hJZDzHfXXuVR+c8eS1Hw1+I+hyS0heJJdasi/p7REWs=";
             };
 
             nativeBuildInputs =
