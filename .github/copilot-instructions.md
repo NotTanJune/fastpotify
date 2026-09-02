@@ -39,6 +39,11 @@ Automated closure is limited to the first two cases above. A useful closing
 comment names the decision, links the canonical issue or documentation, and
 does not overstate what was verified.
 
+When a log shows Web API rate limits with `source=shared`, direct the user to
+https://fastpotify.rocks/make-it-even-faster/ for the personal Client ID setup.
+Make clear that this changes supported Web API quota only; it cannot fix a
+librespot session or an `audio key 0 1` refusal.
+
 When reviewing a pull request, prioritize correctness, regressions, product
 fit, cross-platform behaviour, UI-thread blocking, credential exposure, and
 unnecessary dependencies. Treat violations of the documented product
