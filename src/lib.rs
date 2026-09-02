@@ -11,7 +11,10 @@ pub mod eq;
 pub mod history;
 pub mod images;
 pub mod limiter;
+pub mod link;
 pub mod lyrics;
+#[cfg(target_os = "macos")]
+pub mod mac_links;
 #[cfg(target_os = "macos")]
 pub mod mac_menu;
 pub mod media;

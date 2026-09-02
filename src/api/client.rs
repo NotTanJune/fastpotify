@@ -959,6 +959,10 @@ impl ApiClient {
         self.get(&format!("/tracks/{id}"), &[]).await
     }
 
+    pub async fn episode(&self, id: &str) -> Result<Episode> {
+        self.get(&format!("/episodes/{id}"), &[]).await
+    }
+
     pub async fn recommendations(
         &self,
         seed_tracks: &[String],

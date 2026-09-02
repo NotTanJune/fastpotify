@@ -198,6 +198,11 @@ pub enum ApiRequest {
     Track {
         id: String,
     },
+    /// One episode, asked for by a link to it: the podcast it belongs to
+    /// is the page that opens.
+    Episode {
+        id: String,
+    },
     Remote {
         action: RemoteAction,
         device_id: Option<String>,
@@ -386,6 +391,10 @@ pub enum ApiResponse {
     Track {
         id: String,
         result: ApiResult<Track>,
+    },
+    Episode {
+        id: String,
+        result: ApiResult<Episode>,
     },
     Remote {
         action: RemoteAction,
@@ -1683,7 +1692,8 @@ fn operation_for(api: &ApiGateway, request: &ApiRequest) -> Operation {
         | ApiRequest::AlbumTracks { .. }
         | ApiRequest::Show { .. }
         | ApiRequest::ShowEpisodes { .. }
-        | ApiRequest::Track { .. } => Operation::Catalog,
+        | ApiRequest::Track { .. }
+        | ApiRequest::Episode { .. } => Operation::Catalog,
     }
 }
 
@@ -1980,6 +1990,10 @@ async fn handle(api: &ApiGateway, request: ApiRequest) -> (ApiResponse, Option<A
         },
         ApiRequest::Track { id } => ApiResponse::Track {
             result: routed!(track(&id)),
+            id,
+        },
+        ApiRequest::Episode { id } => ApiResponse::Episode {
+            result: routed!(episode(&id)),
             id,
         },
         ApiRequest::Remote {

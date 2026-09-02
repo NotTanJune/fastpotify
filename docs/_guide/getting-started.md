@@ -37,7 +37,10 @@ install `noto-fonts` and `noto-fonts-cjk` (Arch) or `fonts-noto` and
 
 ![Japanese, Chinese, and Korean titles in a playlist](/assets/images/scripts.png)
 
-A desktop entry ships in `packaging/applications/fastpotify.desktop`.
+A desktop entry ships in `packaging/applications/fastpotify.desktop`. It
+registers Fastpotify for `spotify:` links; with another Spotify client
+installed, `xdg-mime default fastpotify.desktop x-scheme-handler/spotify`
+picks Fastpotify.
 
 ## Sign in
 
@@ -70,3 +73,7 @@ You can rename it in Settings.
   searches, and `Q` opens the queue. Ctrl+/ shows the full list.
 - **Rows and cards have context menus.** Right-click a song, playlist, album,
   or artist to see actions such as queue, save, add to playlist, and copy link.
+- **Spotify links open in Fastpotify.** A `spotify:` link shared from another
+  app opens its page, starting Fastpotify if it is not running. Links to
+  `open.spotify.com` go through the browser first, which hands them over the
+  same way. `fastpotify <link>` does the same from a terminal.

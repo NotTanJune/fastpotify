@@ -40,6 +40,10 @@ everyday use, and connection details.
   Add songs from a row menu or drag them to a playlist in the sidebar. A
   playlist a friend shared with you takes songs too, as Spotify's own apps
   allow.
+- **Opens Spotify links.** Fastpotify registers for `spotify:` links, so a
+  song, album, artist, playlist, or podcast shared from another app opens
+  in it, whether it is running or not. `open.spotify.com` addresses go
+  through the browser, which hands them to the same handler.
 - **Queue** as a side panel or a page; add anything to it from a row menu.
 - **Resumes the last session.** On startup, the last song is paused where it
   stopped. Play resumes it, and the other playback controls work before it
@@ -136,6 +140,9 @@ macOS and Windows include common fonts. On Linux, install `noto-fonts` and
 Ubuntu) if titles appear as empty boxes.
 
 A desktop entry is provided in `packaging/applications/fastpotify.desktop`.
+It registers Fastpotify for `spotify:` links; `xdg-mime default
+fastpotify.desktop x-scheme-handler/spotify` makes it the one the desktop
+uses when another Spotify client is installed too.
 
 ## Sign in
 
@@ -222,6 +229,10 @@ marked with `*`. `--raw` prints JSON. The command refreshes the device list,
 so the first call after startup may be empty. Run it again if needed.
 
 A verb exits non-zero when Fastpotify is not running.
+
+On every platform, `fastpotify <link>` opens a Spotify link, a `spotify:`
+URI or an `open.spotify.com` address, in the running app, or starts the
+app on it. This is what the desktop runs when a link is clicked.
 
 Launchers such as Raycast or Alfred can use these commands. The Stream Deck
 plugin uses the same interface.

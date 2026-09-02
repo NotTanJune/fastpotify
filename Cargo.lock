@@ -1627,6 +1627,7 @@ dependencies = [
  "windows-sys 0.60.2",
  "winit",
  "winresource",
+ "zbus",
 ]
 
 [[package]]

@@ -361,6 +361,9 @@ pub struct App {
     /// URI: the ones shared with it by invitation, which the Web API's
     /// collaborative flag does not show. Empty until the session answers.
     pub editable_by_grant: std::collections::BTreeSet<String>,
+    /// A Spotify link handed over from outside, waiting for the account
+    /// to be signed in and, for a song, for its album to be known.
+    pending_link: Option<String>,
     /// Sidebar folders rolled up, by their rootlist ids.
     pub collapsed_folders: Vec<String>,
     /// A newer release than this build, once GitHub has said so.
@@ -592,6 +595,7 @@ impl App {
             pending_queue_adds: Vec::new(),
             rootlist: Vec::new(),
             editable_by_grant: std::collections::BTreeSet::new(),
+            pending_link: None,
             collapsed_folders: session.collapsed_folders.clone(),
             update: None,
             last_update_check: None,
@@ -1881,6 +1885,7 @@ impl App {
                     offset_uri: None,
                     offset_index: None,
                 }),
+                ControlCommand::OpenLink(uri) => Some(Action::OpenLink(uri)),
                 ControlCommand::Transfer(device_id) => Some(Action::Transfer(device_id)),
                 ControlCommand::RefreshDevices => Some(Action::RefreshDevices),
             };
@@ -3633,10 +3638,29 @@ impl App {
             }
             ApiResponse::Track { id, result } => {
                 self.track_requests.remove(&id);
-                if let Ok(track) = result {
-                    self.track_cache.insert(id, track);
+                match result {
+                    Ok(track) => {
+                        self.track_cache.insert(id, track);
+                    }
+                    Err(error) => {
+                        if self.pending_link.as_deref()
+                            == Some(format!("spotify:track:{id}").as_str())
+                        {
+                            self.pending_link = None;
+                            self.toast_error(format!("Cannot open this song: {error}"));
+                        }
+                    }
                 }
             }
+            // Only a link asks for an episode; its podcast's page is the
+            // nearest thing to a page for it.
+            ApiResponse::Episode { result, .. } => match result {
+                Ok(episode) => match episode.show.filter(|show| !show.id.is_empty()) {
+                    Some(show) => self.open(Page::Show(show.id)),
+                    None => self.toast_error("This episode's podcast is not on Spotify"),
+                },
+                Err(error) => self.toast_error(format!("Cannot open this episode: {error}")),
+            },
             ApiResponse::Remote { action, result } => {
                 if matches!(action, RemoteAction::Play | RemoteAction::Pause) {
                     self.clear_play_pending();
@@ -3700,6 +3724,59 @@ impl App {
         self.history_index = self.history.len() - 1;
         self.show_devices = false;
         self.ensure_loaded(page);
+    }
+
+    /// Hands the app a Spotify link from outside, a canonical URI as
+    /// [`crate::link::parse`] makes it: the window comes forward and the
+    /// page opens once the account is signed in.
+    pub fn open_link(&mut self, uri: String) {
+        self.actions.push(Action::OpenLink(uri));
+    }
+
+    /// Opens the page behind the pending link once the account is signed
+    /// in. A song and an episode have no page of their own here, so the
+    /// album's and the podcast's open, once Spotify has said which.
+    fn open_pending_link(&mut self) {
+        let Some(uri) = self.pending_link.clone() else {
+            return;
+        };
+        if self.user.is_none() {
+            return;
+        }
+        if let Some(page) = Page::from_uri(&uri) {
+            self.pending_link = None;
+            self.open(page);
+            return;
+        }
+        let id = util::uri_id(&uri).unwrap_or_default().to_string();
+        match util::uri_kind(&uri) {
+            Some("track") => {
+                if let Some(track) = self.track_cache.get(&id) {
+                    self.pending_link = None;
+                    let album = track
+                        .album
+                        .as_ref()
+                        .map(|album| album.id.clone())
+                        .filter(|id| !id.is_empty());
+                    match album {
+                        Some(album) => self.open(Page::Album(album)),
+                        None => self.toast_error("This song's album is not on Spotify"),
+                    }
+                } else if self.track_requests.insert(id.clone()) {
+                    // The answer lands in the cache, and the link waits
+                    // for the next frame to find it there.
+                    self.backend.api(ApiRequest::Track { id });
+                }
+            }
+            Some("episode") => {
+                self.pending_link = None;
+                self.backend.api(ApiRequest::Episode { id });
+            }
+            _ => {
+                self.pending_link = None;
+                self.toast_error("Fastpotify cannot open this kind of Spotify link");
+            }
+        }
     }
 
     pub fn can_go_back(&self) -> bool {
@@ -4467,6 +4544,13 @@ impl App {
                 if let Some(page) = Page::from_uri(&uri) {
                     self.open(page);
                 }
+            }
+            Action::OpenLink(uri) => {
+                // The window first: a link is the user asking for the
+                // app, signed in or not, and the page follows when it can.
+                self.pending_link = Some(uri);
+                self.open_pending_link();
+                self.actions.push(Action::ShowWindow);
             }
             Action::Back => {
                 if self.can_go_back() {
@@ -5247,6 +5331,7 @@ impl App {
     pub fn background_frame(&mut self, ctx: &egui::Context) {
         self.handle_control_commands();
         self.handle_events();
+        self.open_pending_link();
         self.handle_media_commands();
         self.handle_tray();
         self.tick(ctx);
@@ -7414,6 +7499,110 @@ mod tests {
             app.toasts
                 .iter()
                 .any(|toast| toast.message.starts_with("Gone: "))
+        );
+    }
+
+    /// A link from outside waits for the account and then opens its page;
+    /// a song's link opens the album the song is on.
+    #[test]
+    fn a_link_waits_for_the_account_and_then_opens_its_page() {
+        use crate::api::models::{Album, Track};
+
+        // #given a signed-out app handed a playlist link
+        let mut app = headless_app();
+        let ctx = egui::Context::default();
+        app.actions
+            .push(Action::OpenLink("spotify:playlist:pl1".into()));
+        app.apply_actions(&ctx);
+
+        // #then the window is asked for but the page waits
+        assert_eq!(*app.page(), Page::Home);
+        assert_eq!(app.pending_link.as_deref(), Some("spotify:playlist:pl1"));
+
+        // #when the account arrives
+        app.user = Some(User {
+            id: "me".into(),
+            ..User::default()
+        });
+        app.open_pending_link();
+
+        // #then the playlist opens, once
+        assert_eq!(*app.page(), Page::Playlist("pl1".into()));
+        assert_eq!(app.pending_link, None);
+
+        // #when a song whose album is known is linked
+        app.track_cache.insert(
+            "t1".into(),
+            Track {
+                id: Some("t1".into()),
+                uri: "spotify:track:t1".into(),
+                album: Some(Album {
+                    id: "al1".into(),
+                    ..Album::default()
+                }),
+                ..Track::default()
+            },
+        );
+        app.actions
+            .push(Action::OpenLink("spotify:track:t1".into()));
+        app.apply_actions(&ctx);
+
+        // #then its album's page opens
+        assert_eq!(*app.page(), Page::Album("al1".into()));
+        assert_eq!(app.pending_link, None);
+
+        // #when a song still unknown is linked
+        app.actions
+            .push(Action::OpenLink("spotify:track:t2".into()));
+        app.apply_actions(&ctx);
+
+        // #then the link waits for Spotify's answer rather than guessing
+        assert_eq!(*app.page(), Page::Album("al1".into()));
+        assert_eq!(app.pending_link.as_deref(), Some("spotify:track:t2"));
+        assert!(app.track_requests.contains("t2"));
+
+        // #when Spotify has no such song
+        app.handle_api(ApiResponse::Track {
+            id: "t2".into(),
+            result: Err(crate::api::client::ApiError::Status {
+                status: 404,
+                message: "not found".into(),
+            }),
+        });
+
+        // #then the link is given up on and the user told
+        assert_eq!(app.pending_link, None);
+        assert!(
+            app.toasts
+                .iter()
+                .any(|toast| toast.message.contains("Cannot open"))
+        );
+    }
+
+    /// A link to something the app has no page for is refused with a word,
+    /// not held forever.
+    #[test]
+    fn a_link_to_nothing_the_app_shows_says_so() {
+        // #given
+        let mut app = headless_app();
+        let ctx = egui::Context::default();
+        app.user = Some(User {
+            id: "me".into(),
+            ..User::default()
+        });
+
+        // #when
+        app.actions
+            .push(Action::OpenLink("spotify:search:rock".into()));
+        app.apply_actions(&ctx);
+
+        // #then
+        assert_eq!(app.pending_link, None);
+        assert_eq!(*app.page(), Page::Home);
+        assert!(
+            app.toasts
+                .iter()
+                .any(|toast| toast.message.contains("cannot open"))
         );
     }
 

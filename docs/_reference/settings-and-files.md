@@ -83,11 +83,17 @@ main fields are:
 ## Command line
 
 ```
-fastpotify [OPTIONS]
+fastpotify [OPTIONS] [LINK]
 
+  LINK                  A Spotify link to open: spotify:track:…, or an
+                        open.spotify.com address
   --device-name <NAME>  Spotify Connect name for this session
   -v, --verbose         More logs from librespot and the API client
 ```
+
+A link goes to the running Fastpotify when there is one, which then opens
+the page and brings its window forward; otherwise the app starts on it. The
+desktop's handler for `spotify:` links runs exactly this.
 
 Attach `fastpotify.log` from the state directory to bug reports. It contains
 the last run's output, including extra lines from `fastpotify -v`. After a

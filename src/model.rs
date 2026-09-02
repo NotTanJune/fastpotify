@@ -557,6 +557,9 @@ pub struct Toast {
 pub enum Action {
     Open(Page),
     OpenUri(String),
+    /// A Spotify link from outside the app: its page opens and the window
+    /// comes forward, once the account is signed in.
+    OpenLink(String),
     Back,
     Forward,
     PlayContext {

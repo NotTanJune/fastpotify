@@ -116,7 +116,9 @@ souvlaki = { version = "0.8", default-features = false }
 # callback live on the main thread.
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSMenu", "NSMenuItem", "NSResponder", "NSRunningApplication"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSDate", "NSObjCRuntime", "NSRunLoop", "NSString"] }
+# NSAppleEventManager and NSAppleEventDescriptor carry the Spotify links
+# macOS hands an app registered for the scheme (src/mac_links.rs).
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSAppleEventDescriptor", "NSAppleEventManager", "NSDate", "NSObjCRuntime", "NSRunLoop", "NSString"] }
 
 [target.'cfg(windows)'.dependencies]
 # A hidden window for the media controls to belong to, and message loops.
@@ -126,6 +128,11 @@ windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Graphic
 ksni = { version = "0.3", features = ["blocking"] }
 librespot-playback = { version = "0.8", default-features = false, features = ["rodio-backend", "pulseaudio-backend", "rustls-tls-native-roots"] }
 mpris-server = { version = "0.10", features = ["tokio"] }
+# The bus mpris-server already speaks, named directly so its interface macro
+# resolves: the running instance answers `Open` on its own name for the
+# launch a Spotify link makes (src/single_instance.rs). Same version, so
+# nothing new is compiled.
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 
 # The icon and version information Windows shows for the executable.
 [target.'cfg(windows)'.build-dependencies]

@@ -17,8 +17,10 @@ One download for both Apple Silicon and Intel:
 
 - [fastpotify-v{{ v }}-macos-universal.dmg]({{ base }}/fastpotify-v{{ v }}-macos-universal.dmg)
 
-Open it and drag **Fastpotify** to Applications. Or, with
-[Homebrew](https://brew.sh):
+Open it and drag **Fastpotify** to Applications. Once opened, it is
+registered for `spotify:` links, so links shared from other apps open in
+it; with the official client installed too, macOS keeps whichever it used
+last. Or, with [Homebrew](https://brew.sh):
 
 ```sh
 brew install --cask crmne/tap/fastpotify
@@ -56,7 +58,9 @@ Later launches work with a normal double-click.
 ## Windows
 
 The installer adds Fastpotify to the Start menu and needs no administrator
-rights. Choose x86_64 for most PCs or aarch64 for Windows on ARM:
+rights. It also registers Fastpotify for `spotify:` links; if the official
+client is installed too, Settings → Apps → Default apps decides which of
+the two opens them. Choose x86_64 for most PCs or aarch64 for Windows on ARM:
 
 - [fastpotify-v{{ v }}-x86_64-pc-windows-msvc-setup.exe]({{ base }}/fastpotify-v{{ v }}-x86_64-pc-windows-msvc-setup.exe)
 - [fastpotify-v{{ v }}-aarch64-pc-windows-msvc-setup.exe]({{ base }}/fastpotify-v{{ v }}-aarch64-pc-windows-msvc-setup.exe)
@@ -103,7 +107,8 @@ third-party packages. Report package-specific problems to their packagers.
 - [fastpotify-v{{ v }}-aarch64-unknown-linux-gnu.tar.gz]({{ base }}/fastpotify-v{{ v }}-aarch64-unknown-linux-gnu.tar.gz)
 
 Unpack, put `fastpotify` on your PATH, and copy the desktop entry and icon
-from the bundled `packaging/` directory if you want it in your launcher.
+from the bundled `packaging/` directory if you want it in your launcher and
+handling `spotify:` links.
 The binary needs ALSA, PulseAudio or PipeWire, and Wayland or X11.
 
 Or build from source: see [Getting Started](/getting-started/).
