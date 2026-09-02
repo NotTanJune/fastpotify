@@ -34,6 +34,16 @@ Spotify requests, Connect, credential storage, or network behaviour. Read
 contract, and the queue tests in `src/app.rs` enforce them. Read the
 nearby module tests before changing a state machine or API fallback.
 
+`docs/_reference/what-spotify-allows.md` lists what the Web API, the
+librespot session, and librespot playback each offer, and the requests
+none of them can serve (pins synchronised with Spotify, folder editing,
+Smart Shuffle, lossless, local files, and more), each with its reason.
+Before building or promising a Spotify-facing feature, and before answering
+an issue that asks for one, find it there. A request in the last section is
+answered with that reason and closed, not worked on; if the reason has
+lapsed because librespot or the Web API gained the capability, update the
+page in the same change.
+
 The interface is optimistic, always. A control shows its result the
 moment it is used: a double-clicked song is the playing song, Next pops
 the queue's head, an added song has its row. The backend then makes it

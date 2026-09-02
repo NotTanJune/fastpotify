@@ -3,6 +3,18 @@
 Use `AGENTS.md` and `CONTRIBUTING.md` as the source of truth for every change
 and review.
 
+When answering or triaging an issue that asks for a Spotify-facing feature,
+consult `docs/_reference/what-spotify-allows.md` first. It lists what the
+Web API, the librespot session, and librespot playback each offer, and the
+requests none of them can serve, with the reason for each. A request in its
+last section (pins synchronised with the Spotify app, editing playlist
+folders, Smart Shuffle, lossless audio, local files, playback speed, and
+the rest) is answered with that reason, a link to the page, and what the app
+offers instead, and then closed; do not propose implementing it. A request
+that is under one of the three surfaces but not built is a valid feature
+request. If the page has gone stale because librespot or the Web API changed,
+say so and ask for it to be updated rather than answering from memory.
+
 When reviewing a pull request, prioritize correctness, regressions, product
 fit, cross-platform behaviour, UI-thread blocking, credential exposure, and
 unnecessary dependencies. Treat violations of the documented product

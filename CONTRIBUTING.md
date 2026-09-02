@@ -24,6 +24,11 @@ Some boundaries come from Spotify or from upstream libraries:
 - Fastpotify will not embed a browser engine, add telemetry, or introduce a
   Fastpotify-operated service.
 
+[What Spotify Lets a Client Do](docs/_reference/what-spotify-allows.md)
+lists what each of the three surfaces offers and the requests none of them
+can serve, with the reason for each; a request in its last section is
+answered from there and closed.
+
 Duplicate, out-of-scope, or incomplete issues may be closed with a short
 explanation.
 
