@@ -64,6 +64,9 @@ picture. Zero volume still dances.
 - A reply should move the issue forward: make the maintainer's decision, say
   that a fix is planned or in progress, or ask for one specific thing needed
   next. Include technical detail only when the reporter needs it to act.
+- When a valid issue has a clear, bounded fix that can be implemented now,
+  implement it instead of posting the proposed design in the issue. Do not use
+  public comments as notes to yourself or as a substitute for doing the work.
 - Never post two maintainer comments in a row on the same issue or pull
   request. If nobody has replied since the last maintainer comment, edit that
   comment instead.

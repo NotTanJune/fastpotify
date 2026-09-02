@@ -43,10 +43,13 @@ Write issue replies for the reporter, not as an engineering investigation
 log. Keep them short, direct, and in plain language. Each reply must move the
 issue forward by making a decision, stating that a fix is planned or in
 progress, or asking for one specific thing needed next. Include technical
-detail only when the reporter needs it to act. Never post two maintainer
-comments in a row on the same issue or pull request; edit the previous comment
-when nobody has replied since it. Keep additional investigation notes private.
-Never use em dashes; use a full stop, comma, colon, or parentheses instead.
+detail only when the reporter needs it to act. When a valid issue has a clear,
+bounded fix that can be implemented now, implement it instead of posting the
+proposed design in the issue. Do not use public comments as private work notes.
+Never post two maintainer comments in a row on the same issue or pull request;
+edit the previous comment when nobody has replied since it. Keep additional
+investigation notes private. Never use em dashes; use a full stop, comma,
+colon, or parentheses instead.
 
 When a log shows Web API rate limits with `source=shared`, direct the user to
 https://fastpotify.rocks/make-it-even-faster/ for the personal Client ID setup.
