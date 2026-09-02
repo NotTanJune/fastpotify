@@ -35,6 +35,9 @@ adds a separate Development Mode quota. See
   ([file locations](/settings-and-files/)).
 - Downloaded audio and artwork, in the cache directory, within the budget
   you set.
+- On Windows and macOS, desktop media controls receive artwork from that
+  cache instead of downloading the Spotify image a second time. Linux MPRIS
+  carries the Spotify artwork URL for the desktop to resolve.
 - Lyrics, in the cache directory, for a month.
 - Fastpotify has no telemetry, analytics, or hosted service. When the lyrics
   panel is open and Spotify has no lyrics, it sends the track's artist, title,
