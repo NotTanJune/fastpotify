@@ -357,6 +357,10 @@ pub struct App {
     /// The account's playlist tree from Spotify, folders and all; empty
     /// until the session answers.
     pub rootlist: Vec<crate::player::RootlistEntry>,
+    /// Playlists the account may add songs to by Spotify's own word, by
+    /// URI: the ones shared with it by invitation, which the Web API's
+    /// collaborative flag does not show. Empty until the session answers.
+    pub editable_by_grant: std::collections::BTreeSet<String>,
     /// Sidebar folders rolled up, by their rootlist ids.
     pub collapsed_folders: Vec<String>,
     /// A newer release than this build, once GitHub has said so.
@@ -587,6 +591,7 @@ impl App {
             manual_queue: Vec::new(),
             pending_queue_adds: Vec::new(),
             rootlist: Vec::new(),
+            editable_by_grant: std::collections::BTreeSet::new(),
             collapsed_folders: session.collapsed_folders.clone(),
             update: None,
             last_update_check: None,
@@ -1031,7 +1036,12 @@ impl App {
     // ---- frame ---------------------------------------------------------------
 
     fn handle_events(&mut self) {
-        for event in self.backend.poll() {
+        let events = self.backend.poll();
+        self.handle_backend_events(events);
+    }
+
+    fn handle_backend_events(&mut self, events: Vec<Event>) {
+        for event in events {
             if self.offline {
                 continue;
             }
@@ -1061,7 +1071,10 @@ impl App {
                 }
                 Event::Error(message) => self.toast_error(message),
                 Event::Rootlist { result } => match result {
-                    Ok(entries) => self.rootlist = entries,
+                    Ok(rootlist) => {
+                        self.rootlist = rootlist.entries;
+                        self.editable_by_grant = rootlist.editable;
+                    }
                     Err(error) => log::warn!("rootlist unavailable: {error}"),
                 },
                 Event::Lyrics { uri, result } => {
@@ -5202,17 +5215,26 @@ impl App {
         self.selection = None;
     }
 
+    /// Whether songs may be added to `playlist` from here: the account
+    /// owns it, Spotify flags it collaborative, or the rootlist says the
+    /// account was invited to it.
+    pub fn can_edit_playlist(&self, playlist: &Playlist) -> bool {
+        let owned = self.user_id().is_some_and(|user| playlist.owned_by(user));
+        owned || playlist.collaborative || self.editable_by_grant.contains(&playlist.uri)
+    }
+
+    /// The library's playlists that take songs, as id and name pairs.
     pub fn editable_playlists(&self) -> Vec<(String, String)> {
-        let Some(user_id) = self.user_id() else {
+        if self.user_id().is_none() {
             return Vec::new();
-        };
+        }
         self.library
             .playlists
             .get()
             .map(|playlists| {
                 playlists
                     .iter()
-                    .filter(|playlist| playlist.owned_by(user_id) || playlist.collaborative)
+                    .filter(|playlist| self.can_edit_playlist(playlist))
                     .map(|playlist| (playlist.id.clone(), playlist.name.clone()))
                     .collect()
             })
@@ -7393,5 +7415,64 @@ mod tests {
                 .iter()
                 .any(|toast| toast.message.starts_with("Gone: "))
         );
+    }
+
+    /// A playlist shared by invitation takes songs once Spotify's rootlist
+    /// says so, though the Web API calls it neither owned nor collaborative.
+    #[test]
+    fn a_playlist_shared_by_invitation_takes_songs() {
+        // #given a friend's playlist in the library
+        let mut app = headless_app();
+        app.user = Some(User {
+            id: "me".into(),
+            ..User::default()
+        });
+        let theirs = Playlist {
+            id: "shared".into(),
+            name: "the Best Music Ever".into(),
+            uri: "spotify:playlist:shared".into(),
+            owner: crate::api::models::Owner {
+                id: Some("friend".into()),
+                ..Default::default()
+            },
+            ..Playlist::default()
+        };
+        let mut mine = theirs.clone();
+        mine.id = "mine".into();
+        mine.uri = "spotify:playlist:mine".into();
+        mine.owner.id = Some("me".into());
+        let mut public = theirs.clone();
+        public.id = "public".into();
+        public.uri = "spotify:playlist:public".into();
+        app.library.playlists = Loadable::Loaded(vec![theirs.clone(), mine.clone(), public]);
+
+        // #then only the account's own takes songs before Spotify's word
+        assert!(app.can_edit_playlist(&mine));
+        assert!(!app.can_edit_playlist(&theirs));
+        assert_eq!(
+            app.editable_playlists(),
+            vec![("mine".to_string(), "the Best Music Ever".to_string())]
+        );
+
+        // #when the rootlist names the friend's playlist among the editable
+        app.handle_backend_events(vec![Event::Rootlist {
+            result: Ok(crate::player::Rootlist {
+                entries: vec![crate::player::RootlistEntry::Playlist(
+                    "spotify:playlist:shared".into(),
+                )],
+                editable: ["spotify:playlist:shared".to_string()]
+                    .into_iter()
+                    .collect(),
+            }),
+        }]);
+
+        // #then it takes songs, and the followed public one still does not
+        assert!(app.can_edit_playlist(&theirs));
+        let editable: Vec<String> = app
+            .editable_playlists()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(editable, ["shared", "mine"]);
     }
 }

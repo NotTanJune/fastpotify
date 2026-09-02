@@ -37,7 +37,9 @@ everyday use, and connection details.
   artists. **Album**, **playlist**, and **podcast** pages support playback
   from any row.
 - **Edit your playlists.** Create, rename, describe, reorder, and delete them.
-  Add songs from a row menu or drag them to a playlist in the sidebar.
+  Add songs from a row menu or drag them to a playlist in the sidebar. A
+  playlist a friend shared with you takes songs too, as Spotify's own apps
+  allow.
 - **Queue** as a side panel or a page; add anything to it from a row menu.
 - **Resumes the last session.** On startup, the last song is paused where it
   stopped. Play resumes it, and the other playback controls work before it

@@ -27,7 +27,10 @@ struct Entry {
     uri: String,
     round: bool,
     liked: bool,
+    /// The account's own playlist: the one it may rename and delete.
     owned: bool,
+    /// A playlist the account may drop songs on.
+    editable: bool,
     playlist_index: Option<usize>,
     /// A folder row: its rootlist id, whether it is rolled up, and how
     /// many playlists it holds.
@@ -168,6 +171,7 @@ fn folder_rows(app: &App, user_id: &str, entries: &mut Vec<Entry>) {
                         round: false,
                         liked: false,
                         owned: false,
+                        editable: false,
                         playlist_index: None,
                         folder: Some((id.clone(), collapsed, count)),
                         depth,
@@ -192,7 +196,13 @@ fn folder_rows(app: &App, user_id: &str, entries: &mut Vec<Entry>) {
                 if hidden_from.is_some() {
                     continue;
                 }
-                entries.push(playlist_entry(playlist, *index, user_id, depth));
+                entries.push(playlist_entry(
+                    playlist,
+                    *index,
+                    user_id,
+                    app.can_edit_playlist(playlist),
+                    depth,
+                ));
             }
         }
     }
@@ -200,7 +210,13 @@ fn folder_rows(app: &App, user_id: &str, entries: &mut Vec<Entry>) {
     // the end rather than vanish.
     for (index, playlist) in playlists.iter().enumerate() {
         if !seen.contains(playlist.uri.as_str()) {
-            entries.push(playlist_entry(playlist, index, user_id, 0));
+            entries.push(playlist_entry(
+                playlist,
+                index,
+                user_id,
+                app.can_edit_playlist(playlist),
+                0,
+            ));
         }
     }
 }
@@ -238,6 +254,7 @@ fn playlist_entry(
     playlist: &crate::api::models::Playlist,
     index: usize,
     user_id: &str,
+    editable: bool,
     depth: u8,
 ) -> Entry {
     Entry {
@@ -249,6 +266,7 @@ fn playlist_entry(
         round: false,
         liked: false,
         owned: playlist.owned_by(user_id),
+        editable,
         playlist_index: Some(index),
         folder: None,
         depth,
@@ -438,6 +456,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                     round: false,
                     liked: true,
                     owned: false,
+                    editable: false,
                     playlist_index: None,
                     folder: None,
                     depth: 0,
@@ -478,6 +497,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                             round: false,
                             liked: false,
                             owned,
+                            editable: app.can_edit_playlist(playlist),
                             playlist_index: Some(index),
                             folder: None,
                             depth: 0,
@@ -515,6 +535,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                     round: false,
                     liked: false,
                     owned: false,
+                    editable: false,
                     playlist_index: None,
                     folder: None,
                     depth: 0,
@@ -540,6 +561,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                     round: true,
                     liked: false,
                     owned: false,
+                    editable: false,
                     playlist_index: None,
                     folder: None,
                     depth: 0,
@@ -566,6 +588,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                     round: false,
                     liked: false,
                     owned: false,
+                    editable: false,
                     playlist_index: None,
                     folder: None,
                     depth: 0,
@@ -656,7 +679,8 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                 .ctx()
                 .pointer_latest_pos()
                 .filter(|pos| ui.clip_rect().contains(*pos));
-            // Tracks may drop on Liked Songs or owned playlists.
+            // Tracks may drop on Liked Songs or playlists that take songs
+            // from this account.
             let dragging_song = egui::DragAndDrop::has_payload_of_type::<DragTrack>(ui.ctx());
             let drop_target = dragging_song
                 .then_some(pointer)
@@ -664,7 +688,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                 .map(|pos| ((pos.y - list_top) / row_height).floor())
                 .filter(|row| *row >= 0.0 && *row < entries.len() as f32)
                 .map(|row| row as usize)
-                .filter(|row| entries[*row].liked || entries[*row].owned);
+                .filter(|row| entries[*row].liked || entries[*row].editable);
             // Sidebar entries drop between rows, never above Liked Songs.
             let reordering = egui::DragAndDrop::has_payload_of_type::<DragEntry>(ui.ctx());
             let reorder_slot = reordering.then_some(pointer).flatten().map(|pos| {
@@ -673,7 +697,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
             });
             super::widgets::virtual_rows(ui, entries.len(), row_height, |ui, index| {
                 let entry = &entries[index];
-                let droppable = entry.liked || entry.owned;
+                let droppable = entry.liked || entry.editable;
                 let drop_hover = drop_target == Some(index);
                 let active = entry.folder.is_none() && entry.page == current_page;
                 let playing = context_playing

@@ -811,7 +811,8 @@ pub fn playlist(app: &mut App, ui: &mut egui::Ui, id: &str) {
                 },
                 Some(&mut page.filter),
             );
-            let editable = (owned || playlist.collaborative)
+            let editable = app
+                .can_edit_playlist(playlist)
                 .then(|| (playlist.id.clone(), playlist.snapshot_id.clone()));
             table(
                 app,

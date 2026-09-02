@@ -423,10 +423,12 @@ impl Engine {
         }
     }
 
-    /// Account playlist tree in Spotify order, including folder markers.
-    pub async fn rootlist(&self) -> Result<Vec<RootlistEntry>> {
+    /// Account playlist tree in Spotify order, including folder markers,
+    /// and which of its playlists the account may add songs to.
+    pub async fn rootlist(&self) -> Result<Rootlist> {
         use protobuf::Message as _;
         let mut uris = Vec::new();
+        let mut editable = std::collections::BTreeSet::new();
         let mut from = 0usize;
         loop {
             let bytes = self
@@ -444,13 +446,17 @@ impl Engine {
             };
             let count = contents.items.len();
             let truncated = contents.truncated();
+            editable.extend(editable_uris(&contents));
             uris.extend(contents.items.into_iter().filter_map(|item| item.uri));
             if !truncated || count == 0 {
                 break;
             }
             from += count;
         }
-        Ok(parse_rootlist(&uris))
+        Ok(Rootlist {
+            entries: parse_rootlist(&uris),
+            editable,
+        })
     }
 
     /// The display name behind a user id, from the profile view Spotify's
@@ -783,6 +789,32 @@ fn local_track(item: &AudioItem) -> LocalTrack {
     }
 }
 
+/// The account's playlist tree, and what Spotify lets the account do to
+/// the playlists in it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Rootlist {
+    /// The rows in Spotify's order, folder markers included.
+    pub entries: Vec<RootlistEntry>,
+    /// Playlists the account may add songs to, by URI, as Spotify's own
+    /// permission service decorates the rootlist. The Web API's
+    /// `collaborative` flag stays false for a playlist shared by
+    /// invitation, so this is the only word on those.
+    pub editable: std::collections::BTreeSet<String>,
+}
+
+/// The playlists in one rootlist page the account may add songs to, read
+/// from the `capabilities` Spotify puts beside each row.
+pub fn editable_uris(
+    contents: &librespot_protocol::playlist4_external::ListItems,
+) -> impl Iterator<Item = String> + '_ {
+    contents
+        .items
+        .iter()
+        .zip(&contents.meta_items)
+        .filter(|(_, meta)| meta.capabilities.can_edit_items())
+        .filter_map(|(item, _)| item.uri.clone())
+}
+
 /// One row of the account's playlist tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RootlistEntry {
@@ -887,6 +919,43 @@ mod tests {
         // The unclosed folder still closes.
         assert_eq!(rows.last(), Some(&RootlistEntry::FolderEnd));
         assert_eq!(rows.len(), 9);
+    }
+
+    /// A playlist shared by invitation is editable by Spotify's word in the
+    /// rootlist, never by the Web API's collaborative flag.
+    #[test]
+    fn the_rootlist_says_which_playlists_take_songs() {
+        use librespot_protocol::playlist_permission::Capabilities;
+        use librespot_protocol::playlist4_external::{Item, ListItems, MetaItem};
+
+        // #given
+        let mut contents = ListItems::new();
+        for (uri, can_edit) in [
+            ("spotify:playlist:mine", Some(true)),
+            ("spotify:playlist:theirs", Some(false)),
+            ("spotify:playlist:shared", Some(true)),
+            ("spotify:playlist:undecorated", None),
+        ] {
+            let mut item = Item::new();
+            item.set_uri(uri.to_string());
+            contents.items.push(item);
+            let mut meta = MetaItem::new();
+            if let Some(can_edit) = can_edit {
+                let mut capabilities = Capabilities::new();
+                capabilities.set_can_edit_items(can_edit);
+                meta.capabilities = protobuf::MessageField::some(capabilities);
+            }
+            contents.meta_items.push(meta);
+        }
+
+        // #when
+        let editable: Vec<String> = editable_uris(&contents).collect();
+
+        // #then
+        assert_eq!(
+            editable,
+            ["spotify:playlist:mine", "spotify:playlist:shared"]
+        );
     }
 
     use super::*;

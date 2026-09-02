@@ -508,9 +508,10 @@ pub enum Event {
         uri: String,
         result: Result<Option<crate::lyrics::Lyrics>, String>,
     },
-    /// The account's playlist tree, folders and all.
+    /// The account's playlist tree, folders and all, and which of its
+    /// playlists take songs from this account.
     Rootlist {
-        result: Result<Vec<crate::player::RootlistEntry>, String>,
+        result: Result<crate::player::Rootlist, String>,
     },
     /// A playlist's items as last cached, with the snapshot they belong to.
     PlaylistCache {
