@@ -55,7 +55,8 @@ everyday use, and connection details.
   this computer, in Settings and in the skin.
 - **MilkDrop.** The visualiser, powered by
   [projectM](https://github.com/projectM-visualizer/projectm), runs in its own
-  window and process. It supports fullscreen and `.milk` presets.
+  window and process. It supports fullscreen and automatically downloads more
+  than 10,000 `.milk` presets on first use (about 26 MB).
 
   https://github.com/user-attachments/assets/0d408524-2c31-4e43-bd05-73eef3a20f1e
 - **Keyboard-first.** Every common action has a shortcut (`Ctrl+/` or `?` lists

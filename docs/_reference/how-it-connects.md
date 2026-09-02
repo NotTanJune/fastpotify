@@ -35,6 +35,9 @@ adds a separate Development Mode quota. See
   ([file locations](/settings-and-files/)).
 - Downloaded audio and artwork, in the cache directory, within the budget
   you set.
+- The first time MilkDrop opens with an empty preset folder, the two projectM
+  preset packs are downloaded from GitHub (about 26 MB) and stored in the
+  config directory.
 - On Windows and macOS, desktop media controls receive artwork from that
   cache instead of downloading the Spotify image a second time. Linux MPRIS
   carries the Spotify artwork URL for the desktop to resolve.
