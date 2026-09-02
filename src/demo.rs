@@ -565,7 +565,7 @@ pub fn populate(app: &mut App) {
 
 /// Words to go with the sample track, timed so that the one being sung
 /// sits mid-panel at the demo's playback position.
-#[cfg(feature = "demo")]
+#[cfg(any(test, feature = "demo"))]
 fn sample_lyrics() -> crate::lyrics::Lyrics {
     let lines = [
         (40_000, "Streetlights blinking down the river road"),
@@ -1099,13 +1099,9 @@ mod tests {
         app.backend.shutdown();
     }
 
-    /// Rule: at its narrowest the queue panel still puts its header on
-    /// one line. The chips used to wrap under the buttons, and then,
-    /// once the buttons were given their room first, onto a second row,
-    /// which is a lot of panel spent on saying what two words already
-    /// said.
+    /// Rule: side-panel headers stay on one line at their narrowest width.
     #[test]
-    fn the_narrowest_panel_keeps_its_header_on_one_row() {
+    fn the_narrowest_panels_keep_their_headers_on_one_row() {
         let root = std::env::temp_dir().join(format!(
             "fastpotify-queue-header-test-{}",
             std::process::id()
@@ -1129,11 +1125,11 @@ mod tests {
         );
         app.attach(&ctx);
         populate(&mut app);
-        app.show_queue_panel = true;
         app.settings.queue_width = crate::theme::SIDE_PANEL_MIN_WIDTH;
+        app.settings.lyrics_width = crate::theme::SIDE_PANEL_MIN_WIDTH;
+        app.lyrics = Loadable::Loaded(Some(sample_lyrics()));
+        app.lyrics_following = false;
 
-        // Where each piece of text was actually drawn.
-        let mut placed: Vec<(String, f32)> = Vec::new();
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -1141,39 +1137,58 @@ mod tests {
             )),
             ..Default::default()
         };
-        // The panel applies its width after the first frame.
-        for _ in 0..2 {
-            placed.clear();
-            let mut output = ctx.run_ui(input.clone(), |ui| app.frame_ui(ui));
-            output.textures_delta.clear();
-            fn walk(shape: &egui::epaint::Shape, placed: &mut Vec<(String, f32)>) {
-                match shape {
-                    egui::epaint::Shape::Text(text) => {
-                        placed.push((text.galley.job.text.clone(), text.pos.y))
+        let drawn = |app: &mut App| {
+            let mut placed = Vec::new();
+            // A panel applies its requested width after the first frame.
+            for _ in 0..2 {
+                placed.clear();
+                let mut output = ctx.run_ui(input.clone(), |ui| app.frame_ui(ui));
+                output.textures_delta.clear();
+                fn walk(shape: &egui::epaint::Shape, placed: &mut Vec<(String, egui::Rect)>) {
+                    match shape {
+                        egui::epaint::Shape::Text(text) => {
+                            placed.push((text.galley.job.text.clone(), text.visual_bounding_rect()))
+                        }
+                        egui::epaint::Shape::Vec(shapes) => {
+                            shapes.iter().for_each(|shape| walk(shape, placed))
+                        }
+                        _ => {}
                     }
-                    egui::epaint::Shape::Vec(shapes) => {
-                        shapes.iter().for_each(|shape| walk(shape, placed))
-                    }
-                    _ => {}
+                }
+                for clipped in &output.shapes {
+                    walk(&clipped.shape, &mut placed);
                 }
             }
-            for clipped in &output.shapes {
-                walk(&clipped.shape, &mut placed);
+            placed
+        };
+        let assert_same_row = |placed: &[(String, egui::Rect)], left: &str, right: &str| {
+            let at = |label: &str| {
+                placed
+                    .iter()
+                    .find(|(text, _)| text == label)
+                    .unwrap_or_else(|| panic!("{label} was never drawn: {placed:?}"))
+                    .1
+            };
+            let (left_rect, right_rect) = (at(left), at(right));
+            assert!(
+                (left_rect.center().y - right_rect.center().y).abs() < 10.0
+                    && (left_rect.right() <= right_rect.left()
+                        || right_rect.right() <= left_rect.left()),
+                "{left} and {right} should share a clear row at minimum width: {left_rect:?} vs {right_rect:?}"
+            );
+        };
+
+        for (queue, lyrics) in [(false, false), (true, false), (false, true), (true, true)] {
+            app.show_queue_panel = queue;
+            app.show_lyrics_panel = lyrics;
+            let placed = drawn(&mut app);
+            if queue {
+                assert_same_row(&placed, "Queue", "Recent");
+            }
+            if lyrics {
+                assert_same_row(&placed, "Lyrics", "Follow");
             }
         }
-        let at = |label: &str| -> f32 {
-            placed
-                .iter()
-                .find(|(text, _)| text == label)
-                .unwrap_or_else(|| panic!("{label} was never drawn: {placed:?}"))
-                .1
-        };
-        let (queue, recents) = (at("Queue"), at("Recent"));
-        assert!(
-            (queue - recents).abs() < 1.0,
-            "both chips sit on one line at {} wide: Queue at {queue}, Recent at {recents}",
-            crate::theme::SIDE_PANEL_MIN_WIDTH
-        );
         app.backend.shutdown();
     }
 

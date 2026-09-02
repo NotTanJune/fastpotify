@@ -21,3 +21,7 @@ Paused time and seeking do not count.
 
 The local list is stored in `history.json` and is never uploaded. Settings →
 Storage shows its location and has a **Clear history** button.
+
+On Windows, the main window's minimize, maximize, and close buttons share the
+top bar with Fastpotify's controls. Drag an empty part of that bar to move or
+snap the window, and drag a window edge or corner to resize it.
