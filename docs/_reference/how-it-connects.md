@@ -51,6 +51,11 @@ Each Web API session has separate concurrency and rate limits. A `Retry-After`
 response pauses only that session. Fastpotify routes each request once and
 does not retry it through the other app.
 
+Spotify can also explicitly refuse the key needed to decrypt a track. When
+that happens, Fastpotify stops local playback and leaves the rest of the queue
+alone instead of treating every following track as unavailable. This refusal
+comes from Spotify; trying again later may work.
+
 ## Receivers on the local network
 
 Spotify's device list only shows signed-in receivers. A new librespot or
