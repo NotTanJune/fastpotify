@@ -76,6 +76,23 @@ struct AssumedContext {
     at: Instant,
 }
 
+/// A track the interface shows before playback has reported its new state.
+///
+/// Local engine events are ordered, so its next track report settles the
+/// intent. Remote playback is polled and may lag; one contradictory poll is
+/// ignored and a second one settles on what Spotify actually reports.
+struct TrackIntent {
+    uri: String,
+    at: Instant,
+    confirmation: TrackConfirmation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrackConfirmation {
+    Local,
+    Remote { after_poll: u64, mismatches: u8 },
+}
+
 /// The playing item as the interface sees it, whichever device plays it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NowPlaying {
@@ -311,8 +328,8 @@ pub struct App {
     /// every second, so a snapshot must not undo the change on its way past.
     pending_local_volume: Option<(u16, Instant)>,
     optimistic_playing: Option<(bool, Instant)>,
-    /// Track shown immediately after a play request, until the engine reports.
-    intent_track: Option<(String, Instant)>,
+    /// Track shown immediately after a play or skip, until playback reports.
+    intent_track: Option<TrackIntent>,
     /// Requested shuffle mode, applied to every context until changed.
     shuffle_wanted: bool,
     /// Last local shuffle change, used to ignore its echo from the engine.
@@ -783,12 +800,70 @@ impl App {
 
     /// Track shown as current, including a recent unconfirmed play request.
     pub fn current_track_uri(&self) -> Option<String> {
-        if let Some((uri, at)) = &self.intent_track
-            && at.elapsed() < PLAYBACK_HOLD
+        if let Some(intent) = &self.intent_track
+            && intent.at.elapsed() < PLAYBACK_HOLD
         {
-            return Some(uri.clone());
+            return Some(intent.uri.clone());
         }
         self.now_playing().map(|now| now.uri)
+    }
+
+    /// Shows a user-requested track until the responsible playback surface
+    /// has had a chance to report what really started.
+    fn expect_track(&mut self, uri: String) {
+        let confirmation = match self.target() {
+            Target::Local => TrackConfirmation::Local,
+            Target::Remote(_) => TrackConfirmation::Remote {
+                after_poll: self.remote_poll_seq,
+                mismatches: 0,
+            },
+        };
+        self.intent_track = Some(TrackIntent {
+            uri,
+            at: Instant::now(),
+            confirmation,
+        });
+    }
+
+    /// The local engine is the playback authority. A real track change wins
+    /// even when the queue's optimistic guess named a different track.
+    fn reconcile_local_track_intent(&mut self, track_changed: bool, reported: Option<&str>) {
+        let settled = self.intent_track.as_ref().is_some_and(|intent| {
+            matches!(intent.confirmation, TrackConfirmation::Local)
+                && (track_changed || reported == Some(intent.uri.as_str()))
+        });
+        if settled {
+            self.intent_track = None;
+        }
+    }
+
+    /// A poll issued before the command cannot settle its intent. Spotify's
+    /// first later answer may still describe the old track, so a mismatch is
+    /// held and checked once more. Agreement, or two later mismatches, settles
+    /// on the reported state.
+    fn reconcile_remote_track_intent(&mut self, poll: u64, reported: Option<&str>) {
+        let mut settled = false;
+        let mut recheck = false;
+        if let Some(intent) = &mut self.intent_track
+            && let TrackConfirmation::Remote {
+                after_poll,
+                mismatches,
+            } = &mut intent.confirmation
+            && poll > *after_poll
+        {
+            if reported == Some(intent.uri.as_str()) || *mismatches > 0 {
+                settled = true;
+            } else {
+                *after_poll = poll;
+                *mismatches += 1;
+                recheck = true;
+            }
+        }
+        if settled {
+            self.intent_track = None;
+        } else if recheck {
+            self.remote_recheck_at = Some(Instant::now() + REMOTE_RECHECK);
+        }
     }
 
     /// Playback state shown by the UI, including a recent local request.
@@ -1242,13 +1317,11 @@ impl App {
         }
         if state.track != self.local.track {
             self.clear_play_pending();
-            if let (Some(track), Some((intent, _))) = (&state.track, &self.intent_track)
-                && track.uri == *intent
-            {
-                // The engine confirmed the requested track.
-                self.intent_track = None;
-            }
         }
+        self.reconcile_local_track_intent(
+            track_changed,
+            state.track.as_ref().map(|track| track.uri.as_str()),
+        );
         let held_volume = self.held_local_volume(state.volume);
         if held_volume.is_none() && state.volume != self.settings.volume {
             self.settings.volume = state.volume;
@@ -2640,7 +2713,7 @@ impl App {
             self.pending_queue_adds
                 .retain(|(pending, _)| pending != gone);
         }
-        self.intent_track = Some((uri.clone(), Instant::now()));
+        self.expect_track(uri.clone());
         self.set_play_pending(vec![uri]);
         self.optimistic_playing = Some((true, Instant::now()));
         match self.target() {
@@ -2769,15 +2842,22 @@ impl App {
 
     /// Shows the head of Next up as playing before the engine confirms it.
     fn pop_queue_head(&mut self) {
+        // A restored or stale queue has no trustworthy relationship to the
+        // current player state. It can stay visible while the live queue is
+        // fetched, but must not be used to guess where Next will land.
+        let current = self.current_track_uri();
         let Loadable::Loaded(queue) = &mut self.queue else {
             return;
         };
-        if queue.queue.is_empty() {
+        let anchored =
+            current.as_deref() == queue.currently_playing.as_ref().map(PlayableItem::uri);
+        if !anchored || queue.queue.is_empty() {
             return;
         }
         let item = queue.queue.remove(0);
-        self.intent_track = Some((item.uri().to_string(), Instant::now()));
+        let uri = item.uri().to_string();
         queue.currently_playing = Some(item);
+        self.expect_track(uri);
     }
 
     /// Whether a fetched queue predates the latest local change.
@@ -2786,12 +2866,12 @@ impl App {
             return false;
         }
         // A recent play or pop must be reflected in the fetched current row.
-        if let Some((uri, at)) = &self.intent_track
-            && at.elapsed() < PLAYBACK_HOLD
+        if let Some(intent) = &self.intent_track
+            && intent.at.elapsed() < PLAYBACK_HOLD
             && fetched
                 .currently_playing
                 .as_ref()
-                .is_none_or(|item| item.uri() != uri)
+                .is_none_or(|item| item.uri() != intent.uri)
         {
             return true;
         }
@@ -3003,6 +3083,7 @@ impl App {
                                 .as_ref()
                                 .map(|item| item.uri().to_string())
                         });
+                        self.reconcile_remote_track_intent(seq, uri.as_deref());
                         if let Some(remote) = &self.remote
                             && let Some(device) = &remote.state.device
                             && device.id.is_some()
@@ -3766,6 +3847,14 @@ impl App {
                         self.optimistic_playing = None;
                         self.pending_remote_position = None;
                         self.pending_remote_volume = None;
+                        if matches!(
+                            action,
+                            RemoteAction::Play | RemoteAction::Next | RemoteAction::Previous
+                        ) && self.intent_track.as_ref().is_some_and(|intent| {
+                            matches!(intent.confirmation, TrackConfirmation::Remote { .. })
+                        }) {
+                            self.intent_track = None;
+                        }
                         let hint = if error.status() == Some(404) {
                             " Choose a device from the devices menu first."
                         } else {
@@ -4108,11 +4197,12 @@ impl App {
             }
             None => {}
         }
-        self.intent_track = keys
-            .iter()
-            .find(|key| key.contains(":track:"))
-            .cloned()
-            .map(|uri| (uri, Instant::now()));
+        let expected_track = keys.iter().find(|key| key.contains(":track:")).cloned();
+        if let Some(uri) = expected_track {
+            self.expect_track(uri);
+        } else {
+            self.intent_track = None;
+        }
         self.set_play_pending(keys);
         if let Some(context) = request.context_uri.clone() {
             self.note_recent_context(&context);
@@ -6462,6 +6552,100 @@ mod tests {
             app.current_track_uri().as_deref(),
             Some("spotify:track:b"),
             "the popped row is already the one the interface marks as playing"
+        );
+    }
+
+    /// A queue restored at startup is useful to show, but it is not evidence
+    /// of what follows the player now and must not drive an optimistic skip.
+    #[test]
+    fn next_does_not_guess_from_an_unanchored_queue() {
+        let ctx = egui::Context::default();
+        let mut app = headless_app();
+        app.local.track = Some(crate::player::LocalTrack {
+            uri: "spotify:track:honey".into(),
+            ..Default::default()
+        });
+        app.local.playback = Playback::Playing;
+        app.queue = Loadable::Loaded(Queue {
+            currently_playing: None,
+            queue: vec![queued_song("spotify:track:stale")],
+        });
+
+        app.apply(Action::Next, &ctx);
+
+        assert_eq!(
+            app.current_track_uri().as_deref(),
+            Some("spotify:track:honey"),
+            "an unanchored row is not presented as Next's destination"
+        );
+        assert!(app.intent_track.is_none());
+        assert_eq!(
+            queue_uris(&app).1,
+            vec!["spotify:track:stale"],
+            "the restored queue stays visible until the live queue arrives"
+        );
+    }
+
+    /// The queue can still disagree with librespot after an anchored skip.
+    /// Once the engine reports the track that started, its report is final.
+    #[test]
+    fn an_engine_track_report_overrules_the_optimistic_queue_marker() {
+        let ctx = egui::Context::default();
+        let mut app = headless_app();
+        app.local.track = Some(crate::player::LocalTrack {
+            uri: "spotify:track:honey".into(),
+            ..Default::default()
+        });
+        app.local.playback = Playback::Playing;
+        app.queue = loaded_queue("spotify:track:honey", &["spotify:track:guessed"]);
+
+        app.apply(Action::Next, &ctx);
+        assert_eq!(
+            app.current_track_uri().as_deref(),
+            Some("spotify:track:guessed")
+        );
+
+        let mut reported = app.local.clone();
+        reported.track = Some(crate::player::LocalTrack {
+            uri: "spotify:track:black-dove".into(),
+            ..Default::default()
+        });
+        app.handle_local(reported);
+
+        assert_eq!(
+            app.current_track_uri().as_deref(),
+            Some("spotify:track:black-dove"),
+            "the real engine track wins without waiting for a timeout"
+        );
+        assert!(app.intent_track.is_none());
+    }
+
+    /// Remote state is polled rather than pushed. Ignore a poll already in
+    /// flight and one lagging answer, then accept a second report.
+    #[test]
+    fn remote_track_intent_waits_for_a_fresh_confirming_poll() {
+        let mut app = headless_app();
+        app.local_ready = false;
+        app.selected_device = Some("phone".into());
+        app.remote_poll_seq = 7;
+        app.expect_track("spotify:track:wanted".into());
+
+        app.reconcile_remote_track_intent(7, Some("spotify:track:old"));
+        assert!(
+            app.intent_track.is_some(),
+            "the in-flight poll predates the command"
+        );
+
+        app.reconcile_remote_track_intent(8, Some("spotify:track:old"));
+        assert!(
+            app.intent_track.is_some(),
+            "one stale Spotify answer is retried"
+        );
+
+        app.reconcile_remote_track_intent(9, Some("spotify:track:actual"));
+        assert!(
+            app.intent_track.is_none(),
+            "the second fresh report settles playback"
         );
     }
 
