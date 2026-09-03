@@ -1377,6 +1377,79 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// The cover and title in the bottom-left player are a song source, not
+    /// just links. The sidebar can therefore receive the same complete row it
+    /// receives when a table song is dragged.
+    #[test]
+    fn dragging_the_now_playing_song_supplies_a_playlist_row() {
+        let root = std::env::temp_dir().join(format!(
+            "fastpotify-now-playing-drag-test-{}",
+            std::process::id()
+        ));
+        let dirs = AppDirs {
+            config: root.join("config"),
+            state: root.join("state"),
+            cache: root.join("cache"),
+        };
+        let ctx = egui::Context::default();
+        let waker = crate::backend::Waker::default();
+        waker.attach(&ctx);
+        let mut app = App::new(
+            &waker,
+            dirs,
+            Settings::default(),
+            AppOptions {
+                media_controls: false,
+                tray: false,
+            },
+        );
+        app.attach(&ctx);
+        populate(&mut app);
+        for _ in 0..3 {
+            frame(&ctx, &mut app);
+        }
+
+        let start = egui::pos2(40.0, 755.0);
+        frame_events(
+            &ctx,
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        frame_events(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(start + egui::vec2(20.0, -10.0))],
+        );
+
+        let payload = egui::DragAndDrop::payload::<DragTrack>(&ctx)
+            .expect("dragging the bottom-left song should create a song payload");
+        assert_eq!(payload.uri, "spotify:track:trk0");
+        assert_eq!(payload.item.uri(), "spotify:track:trk0");
+        assert_eq!(payload.from, None, "this is an add, not a playlist move");
+
+        egui::DragAndDrop::clear_payload(&ctx);
+        frame_events(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerButton {
+                pos: start,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        app.backend.shutdown();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// Pins are pins: dropping a pinned row at the top of the block
     /// reorders the pins themselves, and the rest of the shelf stays in
     /// its automatic order.

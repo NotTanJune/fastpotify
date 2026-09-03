@@ -37,9 +37,9 @@ everyday use, and connection details.
   artists. **Album**, **playlist**, and **podcast** pages support playback
   from any row.
 - **Edit your playlists.** Create, rename, describe, reorder, and delete them.
-  Add songs from a row menu or drag them to a playlist in the sidebar. A
-  playlist a friend shared with you takes songs too, as Spotify's own apps
-  allow.
+  Add songs from a row menu, or drag a row or the currently playing song to a
+  playlist in the sidebar. A playlist a friend shared with you takes songs too,
+  as Spotify's own apps allow.
 - **Opens Spotify links.** Fastpotify registers for `spotify:` links, so a
   song, album, artist, playlist, or podcast shared from another app opens
   in it, whether it is running or not. `open.spotify.com` addresses go
