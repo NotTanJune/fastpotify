@@ -130,5 +130,13 @@ A release is not the tag alone. Do these in order:
 5. Update the Homebrew cask in the maintainer's tap and the AUR package from
    the release's `checksums.txt`.
 
+Before writing release notes, read the previous two stable releases and match
+their style. Start with a short plain-language summary, use `New` and `Fixed`
+sections as applicable, lead each item with a bold user-facing result, credit
+contributors and reporters with the relevant issue or pull request numbers,
+include a `Thanks` section, and end with the full changelog link. Do not leave
+the generated notes in place or introduce a different section scheme for
+ordinary improvements.
+
 Skipping an applicable step ships a release that lies somewhere; the dropdown
 was forgotten once already.
