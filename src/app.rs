@@ -4849,10 +4849,17 @@ impl App {
                     self.step_resume(false);
                 }
             }
-            Action::Previous => match self.target() {
-                Target::Local => self.backend.player(PlayerCommand::Previous),
-                Target::Remote(device_id) => self.remote(RemoteAction::Previous, device_id),
-            },
+            Action::Previous => {
+                // Next names its expected destination so the row moves before
+                // the engine does. Previous has no forward queue row to name;
+                // discard that expectation or a quick Next, Previous leaves
+                // the row marker stuck on the skipped-to song.
+                self.intent_track = None;
+                match self.target() {
+                    Target::Local => self.backend.player(PlayerCommand::Previous),
+                    Target::Remote(device_id) => self.remote(RemoteAction::Previous, device_id),
+                }
+            }
             Action::Seek(position_ms) => self.seek(position_ms),
             Action::SeekBy(offset) => {
                 if let Some(now) = self.now_playing() {
@@ -6455,6 +6462,34 @@ mod tests {
             app.current_track_uri().as_deref(),
             Some("spotify:track:b"),
             "the popped row is already the one the interface marks as playing"
+        );
+    }
+
+    /// Going back cancels Next's speculative destination, even when both
+    /// commands arrive before the engine has reported either track change.
+    #[test]
+    fn previous_discards_an_unconfirmed_next_marker() {
+        let ctx = egui::Context::default();
+        let mut app = headless_app();
+        app.local.track = Some(crate::player::LocalTrack {
+            uri: "spotify:track:a".into(),
+            ..Default::default()
+        });
+        app.local.playback = Playback::Playing;
+        app.queue = loaded_queue("spotify:track:a", &["spotify:track:b"]);
+
+        app.apply(Action::Next, &ctx);
+        assert_eq!(
+            app.current_track_uri().as_deref(),
+            Some("spotify:track:b"),
+            "Next marks its queue head immediately"
+        );
+
+        app.apply(Action::Previous, &ctx);
+        assert_eq!(
+            app.current_track_uri().as_deref(),
+            Some("spotify:track:a"),
+            "Previous restores the engine's current row instead of holding Next's marker"
         );
     }
 
