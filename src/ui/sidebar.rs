@@ -979,7 +979,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui) {
                         app.actions.push(Action::AddToPlaylist {
                             playlist_id: id.clone(),
                             playlist_name: entry.name.clone(),
-                            uris: vec![track.uri.clone()],
+                            items: vec![track.item.clone()],
                         });
                     }
                 }

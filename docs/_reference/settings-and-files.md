@@ -34,6 +34,9 @@ Progress through a playlist is periodically cached as a contiguous prefix.
 When the playlist has not changed on Spotify, reopening it resumes from that
 prefix instead of requesting the same pages again. Fastpotify validates the
 cache against Spotify's playlist snapshot before showing it.
+Successful playlist edits keep that loaded prefix and save it under Spotify's
+new snapshot. Fastpotify reloads the playlist only if the write fails and the
+optimistic edit must be reconciled.
 
 The last good playlist folder tree is kept in `session.json`, scoped to the
 account that supplied it. This keeps folders visible when local playback is

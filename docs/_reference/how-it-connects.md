@@ -59,10 +59,13 @@ that happens, Fastpotify stops local playback and leaves the rest of the queue
 alone instead of treating every following track as unavailable. This refusal
 comes from Spotify; trying again later may work.
 
-Before adding songs to an existing playlist, Fastpotify reads its entries on
-the background runtime. When it finds a duplicate, the interface asks whether
-to add another copy. If Spotify cannot answer that read, Fastpotify preserves
-the requested edit and lets the playlist write report its own result.
+Before adding songs to an existing playlist, Fastpotify checks the rows it
+already holds. A known duplicate produces an immediate confirmation naming the
+song. Only a playlist that has not been fully loaded needs a background scan to
+rule out duplicates. Once confirmed, the new rows appear locally at once. A
+successful write advances the cached playlist to Spotify's returned snapshot
+instead of downloading the playlist again. If Spotify cannot answer the scan,
+Fastpotify preserves the requested edit and lets the write report its result.
 
 ## Receivers on the local network
 

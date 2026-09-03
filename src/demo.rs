@@ -625,8 +625,8 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                 app.dialog = Some(Dialog::ConfirmPlaylistDuplicates {
                     playlist_id: "pl1".into(),
                     playlist_name: "Long Way Home".into(),
-                    uris: vec!["spotify:track:trk1".into()],
-                    duplicate_count: 1,
+                    items: vec![PlayableItem::Track(track(1))],
+                    duplicate_uris: vec!["spotify:track:trk1".into()],
                 })
             }
             "light" => {
@@ -1284,8 +1284,8 @@ mod tests {
             Dialog::ConfirmPlaylistDuplicates {
                 playlist_id: "pl1".into(),
                 playlist_name: "x".into(),
-                uris: vec!["spotify:track:trk1".into()],
-                duplicate_count: 1,
+                items: vec![PlayableItem::Track(track(1))],
+                duplicate_uris: vec!["spotify:track:trk1".into()],
             },
         ] {
             app.dialog = Some(dialog);
@@ -1343,9 +1343,15 @@ mod tests {
             egui::DragAndDrop::set_payload(
                 &ctx,
                 DragTrack {
-                    uri: "spotify:track:trk0".into(),
-                    title: "Fragments".into(),
+                    uri: "spotify:track:not-in-demo-playlists".into(),
+                    title: "A new song".into(),
                     image: None,
+                    item: PlayableItem::Track(Track {
+                        id: Some("not-in-demo-playlists".into()),
+                        uri: "spotify:track:not-in-demo-playlists".into(),
+                        name: "A new song".into(),
+                        ..Default::default()
+                    }),
                     from: None,
                 },
             );
@@ -1566,6 +1572,11 @@ mod tests {
             uri: uri.to_string(),
             title: "Closer".into(),
             image: None,
+            item: PlayableItem::Track(Track {
+                uri: uri.to_string(),
+                name: "Closer".into(),
+                ..Default::default()
+            }),
             from: Some(("pl1".into(), from as u32)),
         };
 

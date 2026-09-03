@@ -8,7 +8,8 @@ use egui::Color32;
 
 use crate::api::PlayRequest;
 use crate::api::models::{
-    ArtistRef, Device, PlayableItem, PlaybackState, Playlist, Queue, Track, User, pick_image,
+    ArtistRef, Device, PlayableItem, PlaybackState, Playlist, PlaylistItem, Queue, Track,
+    TrackCount, User, UserRef, pick_image,
 };
 use crate::backend::{
     ApiRequest, ApiResponse, AuthStatus, Backend, Command, Event, LocalPlayback, LyricsRequest,
@@ -266,6 +267,13 @@ pub struct App {
 
     pub saved: HashMap<String, bool>,
     saved_pending: HashSet<String>,
+    /// Spotify may expose one recording under several market-specific track
+    /// URIs. Map those URIs to the recording identity returned by the API.
+    track_recordings: HashMap<String, String>,
+    /// Recording identities for which at least one known URI is saved.
+    saved_recordings: HashSet<String>,
+    /// Optimistic library writes that a stale contains response must not undo.
+    saved_writes: HashMap<String, bool>,
     pub accents: HashMap<String, Color32>,
     accent_pending: HashSet<String>,
 
@@ -558,6 +566,9 @@ impl App {
             history_index: 0,
             saved: HashMap::new(),
             saved_pending: HashSet::new(),
+            track_recordings: HashMap::new(),
+            saved_recordings: HashSet::new(),
+            saved_writes: HashMap::new(),
             accents: HashMap::new(),
             accent_pending: HashSet::new(),
             dialog: None,
@@ -738,7 +749,80 @@ impl App {
     }
 
     pub fn is_saved(&self, uri: &str) -> Option<bool> {
-        self.saved.get(uri).copied()
+        let exact = self.saved.get(uri).copied();
+        if exact == Some(true)
+            || self
+                .track_recordings
+                .get(uri)
+                .is_some_and(|key| self.saved_recordings.contains(key))
+        {
+            Some(true)
+        } else {
+            exact
+        }
+    }
+
+    fn remember_track_recording(&mut self, track: &Track) {
+        let Some(key) = track.recording_key() else {
+            return;
+        };
+        self.track_recordings.insert(track.uri.clone(), key.clone());
+        if let Some(linked) = &track.linked_from
+            && !linked.uri.is_empty()
+        {
+            self.track_recordings
+                .insert(linked.uri.clone(), key.clone());
+        }
+        if self.saved.iter().any(|(uri, saved)| {
+            *saved
+                && self
+                    .track_recordings
+                    .get(uri)
+                    .is_some_and(|held| held == &key)
+        }) {
+            self.saved_recordings.insert(key);
+        }
+    }
+
+    fn set_saved_state(&mut self, uri: String, saved: bool) {
+        self.saved.insert(uri.clone(), saved);
+        let Some(key) = self.track_recordings.get(&uri).cloned() else {
+            return;
+        };
+        if saved {
+            self.saved_recordings.insert(key);
+        } else if !self.saved.iter().any(|(candidate, saved)| {
+            *saved
+                && self
+                    .track_recordings
+                    .get(candidate)
+                    .is_some_and(|held| held == &key)
+        }) {
+            self.saved_recordings.remove(&key);
+        }
+    }
+
+    fn saved_toggle_targets(&self, uri: &str) -> Vec<String> {
+        let Some(key) = self.track_recordings.get(uri) else {
+            return vec![uri.to_string()];
+        };
+        let equivalents: Vec<String> = self
+            .saved
+            .iter()
+            .filter(|(candidate, saved)| {
+                **saved
+                    && self
+                        .track_recordings
+                        .get(*candidate)
+                        .is_some_and(|held| held == key)
+            })
+            .map(|(candidate, _)| candidate.clone())
+            .collect();
+        if equivalents.is_empty() {
+            vec![uri.to_string()]
+        } else {
+            equivalents
+        }
     }
 
     fn remote_fresh(&self) -> Option<&RemoteSnapshot> {
@@ -1311,6 +1395,9 @@ impl App {
         self.show_pages.clear();
         self.saved.clear();
         self.saved_pending.clear();
+        self.track_recordings.clear();
+        self.saved_recordings.clear();
+        self.saved_writes.clear();
         self.queue = Loadable::NotLoaded;
         self.devices.clear();
         self.control_devices_stale = true;
@@ -1545,7 +1632,39 @@ impl App {
             None
         };
         if let Some(track) = found {
+            self.remember_track_recording(&track);
             self.track_cache.insert(id.to_owned(), track);
+        }
+    }
+
+    /// Older playlist caches predate recording identities. Once the current
+    /// track supplies an ISRC, refresh only plausible aliases so Spotify can
+    /// confirm which market-specific URI is the same recording.
+    fn request_recording_candidates(&mut self, track: &Track) {
+        if track.recording_key().is_none() {
+            return;
+        }
+        let mut candidates = HashSet::new();
+        for page in self.playlist_pages.values() {
+            for item in &page.items.items {
+                let Some(PlayableItem::Track(candidate)) = item.playable() else {
+                    continue;
+                };
+                if same_recording_hint(track, candidate)
+                    && let Some(id) = candidate.id.as_ref()
+                    && self
+                        .track_cache
+                        .get(id)
+                        .is_none_or(|known| known.recording_key().is_none())
+                {
+                    candidates.insert(id.clone());
+                }
+            }
+        }
+        for id in candidates {
+            if self.track_requests.insert(id.clone()) {
+                self.backend.api(ApiRequest::Track { id });
+            }
         }
     }
 
@@ -2566,6 +2685,9 @@ impl App {
             page.cache_restored_through = None;
             page.pending_cache = None;
             page.cache_checked = true;
+            page.local_additions.clear();
+            page.optimistic_snapshot = None;
+            page.snapshot_rechecks = 0;
             page.generation
         };
         self.clear_picked_rows();
@@ -2610,6 +2732,9 @@ impl App {
                     playlist.cache_checked = true;
                     playlist.cache_restored_through = None;
                     playlist.pending_cache = None;
+                    playlist.local_additions.clear();
+                    playlist.optimistic_snapshot = None;
+                    playlist.snapshot_rechecks = 0;
                     self.backend.api(ApiRequest::Playlist {
                         id: id.clone(),
                         generation: playlist.generation,
@@ -3357,6 +3482,32 @@ impl App {
                 {
                     return;
                 }
+                let stale_write_snapshot = self.playlist_pages.get_mut(&id).is_some_and(|page| {
+                    let Some(expected) = page.optimistic_snapshot.as_deref() else {
+                        return false;
+                    };
+                    let reported = result
+                        .as_ref()
+                        .ok()
+                        .and_then(|playlist| playlist.snapshot_id.as_deref());
+                    if reported == Some(expected) {
+                        page.optimistic_snapshot = None;
+                        page.snapshot_rechecks = 0;
+                        false
+                    } else if result.is_ok() {
+                        page.snapshot_rechecks = page.snapshot_rechecks.saturating_add(1);
+                        true
+                    } else {
+                        false
+                    }
+                });
+                if stale_write_snapshot {
+                    let page = &self.playlist_pages[&id];
+                    if page.snapshot_rechecks <= 3 {
+                        self.backend.api(ApiRequest::Playlist { id, generation });
+                    }
+                    return;
+                }
                 if let Ok(playlist) = &result
                     && let Some(image) = pick_image(&playlist.images, 300)
                 {
@@ -3374,6 +3525,11 @@ impl App {
                     if old_snapshot.is_some() && old_snapshot != new_snapshot {
                         page.cache_saved_through = None;
                         page.cache_restored_through = None;
+                    }
+                    if let Ok(playlist) = &result
+                        && page.items.loaded_once
+                    {
+                        page.items.total = Some(playlist.track_total());
                     }
                     page.playlist.refresh(result);
                 }
@@ -3395,6 +3551,7 @@ impl App {
                 }
                 let mut uris = Vec::new();
                 let mut adders: Vec<String> = Vec::new();
+                let mut tracks = Vec::new();
                 if let Some(page) = self.playlist_pages.get_mut(&id) {
                     match result {
                         _ if page
@@ -3405,6 +3562,14 @@ impl App {
                             // a longer cached prefix was restored.
                         }
                         Ok(items) => {
+                            tracks = items
+                                .items
+                                .iter()
+                                .filter_map(|item| match item.playable() {
+                                    Some(PlayableItem::Track(track)) => Some(track.clone()),
+                                    _ => None,
+                                })
+                                .collect();
                             uris = items
                                 .items
                                 .iter()
@@ -3423,6 +3588,9 @@ impl App {
                         }
                         Err(error) => page.items.fail(friendly_page_error(&error)),
                     }
+                }
+                for track in &tracks {
+                    self.remember_track_recording(track);
                 }
                 self.request_contains(uris);
                 self.request_user_names(adders);
@@ -3503,32 +3671,26 @@ impl App {
             ApiResponse::PlaylistDuplicatesChecked {
                 playlist_id,
                 playlist_name,
-                uris,
+                items,
                 result,
             } => match result {
-                Ok(0) => self.backend.api(ApiRequest::AddToPlaylist {
-                    playlist_id,
-                    playlist_name,
-                    uris,
-                }),
-                Ok(duplicate_count) => {
+                Ok(duplicate_uris) if duplicate_uris.is_empty() => {
+                    self.add_to_playlist_now(playlist_id, playlist_name, items)
+                }
+                Ok(duplicate_uris) => {
                     self.playlist_busy = false;
                     self.dialog = Some(Dialog::ConfirmPlaylistDuplicates {
                         playlist_id,
                         playlist_name,
-                        uris,
-                        duplicate_count,
+                        items,
+                        duplicate_uris,
                     });
                 }
                 Err(error) => {
                     // A failed read must not take away an edit the account is
                     // still allowed to make. The write reports its own error.
                     log::debug!("could not check playlist for duplicates: {error}");
-                    self.backend.api(ApiRequest::AddToPlaylist {
-                        playlist_id,
-                        playlist_name,
-                        uris,
-                    });
+                    self.add_to_playlist_now(playlist_id, playlist_name, items);
                 }
             },
             ApiResponse::PlaylistItemsChanged {
@@ -3542,38 +3704,43 @@ impl App {
                         if !message.is_empty() {
                             self.toast(message);
                         }
+                        let mut generation = None;
                         if let Some(page) = self.playlist_pages.get_mut(&id) {
-                            if let Some(playlist) = page.playlist.get_mut()
-                                && let Some(snapshot) = &snapshot
-                            {
-                                playlist.snapshot_id = Some(snapshot.clone());
+                            if let Some(playlist) = page.playlist.get_mut() {
+                                playlist.snapshot_id = snapshot.clone();
                             }
-                            page.items.reset();
-                            page.contributors.clear();
-                            page.tail_checked = false;
-                            page.cache_saved_through = None;
-                            page.cache_restored_through = None;
-                            page.pending_cache = None;
-                        }
-                        if matches!(self.page(), Page::Playlist(current) if *current == id) {
-                            self.ensure_loaded(Page::Playlist(id.clone()));
+                            if snapshot.is_some() {
+                                page.optimistic_snapshot = snapshot.clone();
+                                page.snapshot_rechecks = 0;
+                            }
+                            generation = Some(page.generation);
                         }
                         if let Some(playlists) = self.library.playlists.get_mut() {
                             for playlist in playlists.iter_mut().filter(|p| p.id == id) {
                                 playlist.snapshot_id = snapshot.clone();
                             }
                         }
+                        self.checkpoint_playlist_cache(&id);
+                        // Reconcile metadata in the background. The mutation
+                        // response and local rows are enough to keep the page;
+                        // no item page is discarded or downloaded again.
+                        if let Some(generation) = generation {
+                            self.backend.api(ApiRequest::Playlist { id, generation });
+                        }
                     }
                     Err(error) => {
                         self.toast_error(format!("Playlist change failed: {error}"));
                         if let Some(page) = self.playlist_pages.get_mut(&id) {
-                            page.items.reset();
-                            page.contributors.clear();
-                            page.tail_checked = false;
-                            page.cache_restored_through = None;
-                            page.pending_cache = None;
+                            page.optimistic_snapshot = None;
+                            page.snapshot_rechecks = 0;
                         }
-                        self.ensure_loaded(Page::Playlist(id));
+                        self.load_playlist_items_at(&id, 0);
+                        if let Some(page) = self.playlist_pages.get(&id) {
+                            self.backend.api(ApiRequest::Playlist {
+                                id,
+                                generation: page.generation,
+                            });
+                        }
                     }
                 }
             }
@@ -3606,7 +3773,11 @@ impl App {
                 match result {
                     Ok(page) => {
                         for item in &page.items {
-                            self.saved.insert(item.track.uri.clone(), true);
+                            let uri = item.track.uri.clone();
+                            self.remember_track_recording(&item.track);
+                            if !self.saved_writes.contains_key(&uri) {
+                                self.set_saved_state(uri, true);
+                            }
                         }
                         self.library.liked.absorb(offset, page);
                     }
@@ -3670,66 +3841,91 @@ impl App {
                 uris,
                 saved,
                 result,
-            } => match result {
-                Ok(()) => {
-                    for uri in &uris {
-                        self.saved.insert(uri.clone(), saved);
-                        match util::uri_kind(uri) {
-                            Some("track") => {
-                                if self.library.liked.loaded_once {
-                                    if saved {
-                                        let total = self
-                                            .library
-                                            .liked
-                                            .total
-                                            .map(|total| total.saturating_add(1));
-                                        self.library.liked.reset();
-                                        self.library.liked.total = total;
-                                        if matches!(self.page(), Page::LikedSongs) {
-                                            self.load_more(Page::LikedSongs);
-                                        }
-                                    } else {
-                                        self.library
-                                            .liked
-                                            .items
-                                            .retain(|item| item.track.uri != *uri);
-                                        if let Some(total) = self.library.liked.total.as_mut() {
-                                            *total = total.saturating_sub(1);
+            } => {
+                let current_uris: Vec<String> = uris
+                    .iter()
+                    .filter(|uri| {
+                        self.saved_writes
+                            .get(*uri)
+                            .is_none_or(|wanted| *wanted == saved)
+                    })
+                    .cloned()
+                    .collect();
+                for uri in &uris {
+                    if self.saved_writes.get(uri) == Some(&saved) {
+                        self.saved_writes.remove(uri);
+                    }
+                }
+                match result {
+                    Ok(()) => {
+                        for uri in &current_uris {
+                            self.set_saved_state(uri.clone(), saved);
+                            match util::uri_kind(uri) {
+                                Some("track") => {
+                                    if self.library.liked.loaded_once {
+                                        if saved {
+                                            let total = self
+                                                .library
+                                                .liked
+                                                .total
+                                                .map(|total| total.saturating_add(1));
+                                            self.library.liked.reset();
+                                            self.library.liked.total = total;
+                                            if matches!(self.page(), Page::LikedSongs) {
+                                                self.load_more(Page::LikedSongs);
+                                            }
+                                        } else {
+                                            self.library
+                                                .liked
+                                                .items
+                                                .retain(|item| item.track.uri != *uri);
+                                            if let Some(total) = self.library.liked.total.as_mut() {
+                                                *total = total.saturating_sub(1);
+                                            }
                                         }
                                     }
                                 }
+                                Some("album") => self.library.albums.reset(),
+                                Some("artist") => self.library.artists.reset(),
+                                Some("show") => self.library.shows.reset(),
+                                Some("episode") => self.library.episodes.reset(),
+                                _ => {}
                             }
-                            Some("album") => self.library.albums.reset(),
-                            Some("artist") => self.library.artists.reset(),
-                            Some("show") => self.library.shows.reset(),
-                            Some("episode") => self.library.episodes.reset(),
-                            _ => {}
+                        }
+                        let message = match (
+                            current_uris.first().and_then(|uri| util::uri_kind(uri)),
+                            saved,
+                        ) {
+                            (Some("track"), true) => "Added to Liked Songs",
+                            (Some("track"), false) => "Removed from Liked Songs",
+                            (Some("artist"), true) => "Following artist",
+                            (Some("artist"), false) => "Unfollowed artist",
+                            (_, true) => "Saved to Your Library",
+                            (_, false) => "Removed from Your Library",
+                        };
+                        if !current_uris.is_empty() {
+                            self.toast(message);
                         }
                     }
-                    let message = match (uris.first().and_then(|uri| util::uri_kind(uri)), saved) {
-                        (Some("track"), true) => "Added to Liked Songs",
-                        (Some("track"), false) => "Removed from Liked Songs",
-                        (Some("artist"), true) => "Following artist",
-                        (Some("artist"), false) => "Unfollowed artist",
-                        (_, true) => "Saved to Your Library",
-                        (_, false) => "Removed from Your Library",
-                    };
-                    self.toast(message);
-                }
-                Err(error) => {
-                    for uri in &uris {
-                        self.saved.insert(uri.clone(), !saved);
+                    Err(error) => {
+                        for uri in &current_uris {
+                            self.set_saved_state(uri.clone(), !saved);
+                        }
+                        if !current_uris.is_empty() {
+                            self.toast_error(format!("Couldn't update your library: {error}"));
+                        }
                     }
-                    self.toast_error(format!("Couldn't update your library: {error}"));
                 }
-            },
+            }
             ApiResponse::Contains { uris, result } => {
                 for uri in &uris {
                     self.saved_pending.remove(uri);
                 }
                 if let Ok(flags) = result {
                     for (uri, flag) in uris.into_iter().zip(flags) {
-                        self.saved.insert(uri, flag);
+                        if !self.saved_writes.contains_key(&uri) {
+                            self.set_saved_state(uri, flag);
+                        }
                     }
                 }
             }
@@ -3875,6 +4071,8 @@ impl App {
                 self.track_requests.remove(&id);
                 match result {
                     Ok(track) => {
+                        self.remember_track_recording(&track);
+                        self.request_recording_candidates(&track);
                         self.track_cache.insert(id, track);
                     }
                     Err(error) => {
@@ -4337,6 +4535,7 @@ impl App {
     fn try_adopt_playlist_cache(&mut self, id: &str) {
         let mut uris = Vec::new();
         let mut adders: Vec<String> = Vec::new();
+        let mut tracks = Vec::new();
         if let Some(page) = self.playlist_pages.get_mut(id) {
             let Some(snapshot_now) = page
                 .playlist
@@ -4376,6 +4575,14 @@ impl App {
                 .filter_map(|item| item.playable())
                 .map(|item| item.uri().to_string())
                 .collect();
+            tracks = cache
+                .items
+                .iter()
+                .filter_map(|item| match item.playable() {
+                    Some(PlayableItem::Track(track)) => Some(track.clone()),
+                    _ => None,
+                })
+                .collect();
             adders = cache
                 .items
                 .iter()
@@ -4388,6 +4595,9 @@ impl App {
             page.items_generation = page.generation;
             page.cache_saved_through = Some(cached_through);
             page.cache_restored_through = Some(cached_through);
+        }
+        for track in &tracks {
+            self.remember_track_recording(track);
         }
         self.request_contains(uris);
         self.request_user_names(adders);
@@ -4841,14 +5051,121 @@ impl App {
         }
     }
 
+    /// Answer from the rows already held locally. A found duplicate is
+    /// definitive even for a partial playlist; an empty answer is definitive
+    /// only when the whole playlist is present.
+    fn local_playlist_duplicates(&self, id: &str, items: &[PlayableItem]) -> Option<Vec<String>> {
+        let page = self.playlist_pages.get(id)?;
+        let existing: HashSet<&str> = page
+            .items
+            .items
+            .iter()
+            .filter_map(PlaylistItem::playable)
+            .map(PlayableItem::uri)
+            .chain(page.local_additions.iter().map(String::as_str))
+            .collect();
+        let duplicates: Vec<String> = items
+            .iter()
+            .map(PlayableItem::uri)
+            .filter(|uri| existing.contains(*uri))
+            .map(str::to_string)
+            .collect();
+        if !duplicates.is_empty() || page.items.is_complete() {
+            Some(duplicates)
+        } else {
+            None
+        }
+    }
+
+    fn prepare_playlist_mutation(&mut self, id: &str) {
+        let Some(page) = self.playlist_pages.get_mut(id) else {
+            return;
+        };
+        self.load_generation += 1;
+        page.generation = self.load_generation;
+        page.items_generation = page.generation;
+        // Reads issued before the edit describe the old snapshot and must not
+        // be allowed to replace the optimistic rows when they arrive.
+        page.items.loading = false;
+        page.cache_saved_through = None;
+        page.cache_restored_through = None;
+        page.pending_cache = None;
+    }
+
+    fn add_to_playlist_now(
+        &mut self,
+        playlist_id: String,
+        playlist_name: String,
+        items: Vec<PlayableItem>,
+    ) {
+        if items.is_empty() {
+            return;
+        }
+        self.dialog = None;
+        self.playlist_busy = true;
+        for item in &items {
+            if let PlayableItem::Track(track) = item {
+                self.remember_track_recording(track);
+            }
+        }
+
+        self.prepare_playlist_mutation(&playlist_id);
+        let added = items.len().try_into().unwrap_or(u32::MAX);
+        let added_by = self.user_id().map(|id| UserRef {
+            id: Some(id.to_string()),
+        });
+        let added_at = Some(jiff::Timestamp::now().to_string());
+        if let Some(page) = self.playlist_pages.get_mut(&playlist_id) {
+            let tail_loaded = page.items.loaded_once && page.items.next_offset.is_none();
+            let current_total = page
+                .items
+                .total
+                .unwrap_or_else(|| page.items.items.len().try_into().unwrap_or(u32::MAX));
+            for item in &items {
+                page.local_additions.insert(item.uri().to_string());
+            }
+            if tail_loaded {
+                page.items
+                    .items
+                    .extend(items.iter().cloned().map(|item| PlaylistItem {
+                        added_at: added_at.clone(),
+                        added_by: added_by.clone(),
+                        is_local: false,
+                        item: Some(item),
+                        track: None,
+                    }));
+            }
+            page.items.total = Some(current_total.saturating_add(added));
+            page.items.revision = page.items.revision.wrapping_add(1);
+            if let Some(playlist) = page.playlist.get_mut() {
+                increase_playlist_total(playlist, added);
+            }
+        }
+        if let Some(playlists) = self.library.playlists.get_mut()
+            && let Some(playlist) = playlists
+                .iter_mut()
+                .find(|playlist| playlist.id == playlist_id)
+        {
+            increase_playlist_total(playlist, added);
+        }
+
+        self.backend.api(ApiRequest::AddToPlaylist {
+            playlist_id,
+            playlist_name,
+            uris: items.iter().map(|item| item.uri().to_string()).collect(),
+        });
+    }
+
     fn set_saved(&mut self, uri: String, saved: bool) {
-        self.saved.insert(uri.clone(), saved);
         if uri.starts_with("spotify:playlist:") {
+            self.saved.insert(uri.clone(), saved);
             let id = util::uri_id(&uri).unwrap_or_default().to_string();
             self.backend
                 .api(ApiRequest::FollowPlaylist { id, follow: saved });
             return;
         }
+        self.set_saved_state(uri.clone(), saved);
+        self.saved_writes.insert(uri.clone(), saved);
         self.backend.api(ApiRequest::SetSaved {
             uris: vec![uri],
             saved,
@@ -5073,40 +5390,55 @@ impl App {
             }
             Action::SetSavedMany { uris, saved } => {
                 for uri in &uris {
-                    self.saved.insert(uri.clone(), saved);
+                    self.set_saved_state(uri.clone(), saved);
+                    self.saved_writes.insert(uri.clone(), saved);
                 }
                 if !uris.is_empty() {
                     self.backend.api(ApiRequest::SetSaved { uris, saved });
                 }
             }
             Action::ToggleSaved(uri) => {
-                let saved = self.saved.get(&uri).copied().unwrap_or(false);
-                self.set_saved(uri, !saved);
+                let saved = self.is_saved(&uri).unwrap_or(false);
+                let targets = if saved {
+                    self.saved_toggle_targets(&uri)
+                } else {
+                    vec![uri]
+                };
+                for target in targets {
+                    self.set_saved(target, !saved);
+                }
             }
             Action::AddToPlaylist {
                 playlist_id,
                 playlist_name,
-                uris,
-            } => {
-                self.playlist_busy = true;
-                self.backend.api(ApiRequest::CheckPlaylistDuplicates {
-                    playlist_id,
-                    playlist_name,
-                    uris,
-                });
-            }
+                items,
+            } => match self.local_playlist_duplicates(&playlist_id, &items) {
+                Some(duplicate_uris) if duplicate_uris.is_empty() => {
+                    self.add_to_playlist_now(playlist_id, playlist_name, items);
+                }
+                Some(duplicate_uris) => {
+                    self.dialog = Some(Dialog::ConfirmPlaylistDuplicates {
+                        playlist_id,
+                        playlist_name,
+                        items,
+                        duplicate_uris,
+                    });
+                }
+                None => {
+                    self.playlist_busy = true;
+                    self.backend.api(ApiRequest::CheckPlaylistDuplicates {
+                        playlist_id,
+                        playlist_name,
+                        items,
+                    });
+                }
+            },
             Action::ConfirmAddToPlaylist {
                 playlist_id,
                 playlist_name,
-                uris,
+                items,
             } => {
-                self.dialog = None;
-                self.playlist_busy = true;
-                self.backend.api(ApiRequest::AddToPlaylist {
-                    playlist_id,
-                    playlist_name,
-                    uris,
-                });
+                self.add_to_playlist_now(playlist_id, playlist_name, items);
             }
             Action::RemoveFromPlaylist { playlist_id, uris } => {
                 let snapshot_id = self
@@ -5114,7 +5446,10 @@ impl App {
                     .get(&playlist_id)
                     .and_then(|page| page.playlist.get())
                     .and_then(|playlist| playlist.snapshot_id.clone());
+                self.prepare_playlist_mutation(&playlist_id);
                 if let Some(page) = self.playlist_pages.get_mut(&playlist_id) {
+                    page.local_additions
+                        .retain(|uri| !uris.iter().any(|removed| removed == uri));
                     page.items.retain(|item| {
                         item.playable()
                             .is_none_or(|playable| !uris.iter().any(|uri| uri == playable.uri()))
@@ -5137,6 +5472,7 @@ impl App {
                     .get(&playlist_id)
                     .and_then(|page| page.playlist.get())
                     .and_then(|playlist| playlist.snapshot_id.clone());
+                self.prepare_playlist_mutation(&playlist_id);
                 if let Some(page) = self.playlist_pages.get_mut(&playlist_id) {
                     let base = page.items.base_offset;
                     if from >= base && to >= base {
@@ -5987,6 +6323,34 @@ impl App {
     pub fn shutdown(&mut self) {
         self.save_state();
         self.backend.shutdown();
+    }
+}
+
+fn same_recording_hint(left: &Track, right: &Track) -> bool {
+    left.uri != right.uri
+        && !left.name.is_empty()
+        && left.name == right.name
+        && left.duration_ms > 0
+        && left.duration_ms == right.duration_ms
+        && !left.artists.is_empty()
+        && left.artists.len() == right.artists.len()
+        && left
+            .artists
+            .iter()
+            .zip(&right.artists)
+            .all(|(left, right)| match (&left.id, &right.id) {
+                (Some(left), Some(right)) => left == right,
+                _ => left.name == right.name,
+            })
+}
+
+fn increase_playlist_total(playlist: &mut Playlist, added: u32) {
+    if let Some(items) = &mut playlist.items_count {
+        items.total = items.total.saturating_add(added);
+    } else if let Some(tracks) = &mut playlist.tracks {
+        tracks.total = tracks.total.saturating_add(added);
+    } else {
+        playlist.items_count = Some(TrackCount { total: added });
     }
 }
 
@@ -7676,6 +8040,13 @@ mod tests {
                     snapshot_id: Some("old".into()),
                     ..Default::default()
                 }),
+                items: PagedList {
+                    items: vec![cached_playlist_row("spotify:track:held")],
+                    total: Some(1),
+                    next_offset: None,
+                    loaded_once: true,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         );
@@ -7699,6 +8070,243 @@ mod tests {
             .get()
             .expect("the playlist page");
         assert_eq!(open.snapshot_id.as_deref(), Some("new"));
+        assert_eq!(
+            app.playlist_pages["changed"].items.items.len(),
+            1,
+            "a successful write does not throw away the loaded playlist"
+        );
+    }
+
+    #[test]
+    fn a_known_duplicate_opens_the_dialog_without_a_spotify_scan() {
+        let mut app = headless_app();
+        app.backend.set_offline(true);
+        let honey = cached_playlist_row("spotify:track:honey");
+        app.playlist_pages.insert(
+            "best".into(),
+            PlaylistPage {
+                items: PagedList {
+                    items: vec![honey.clone()],
+                    total: Some(1),
+                    next_offset: None,
+                    loaded_once: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        app.apply(
+            Action::AddToPlaylist {
+                playlist_id: "best".into(),
+                playlist_name: "The best music ever".into(),
+                items: vec![honey.playable().unwrap().clone()],
+            },
+            &egui::Context::default(),
+        );
+
+        assert!(!app.playlist_busy, "there is no duplicate scan to wait for");
+        assert!(matches!(
+            app.dialog,
+            Some(Dialog::ConfirmPlaylistDuplicates {
+                ref duplicate_uris,
+                ..
+            }) if duplicate_uris == &["spotify:track:honey"]
+        ));
+    }
+
+    #[test]
+    fn adding_to_a_loaded_playlist_is_immediate_and_keeps_its_cache() {
+        let mut app = headless_app();
+        app.backend.set_offline(true);
+        app.library.playlists = Loadable::Loaded(vec![Playlist {
+            id: "best".into(),
+            snapshot_id: Some("old".into()),
+            items_count: Some(TrackCount { total: 1 }),
+            ..Default::default()
+        }]);
+        app.playlist_pages.insert(
+            "best".into(),
+            PlaylistPage {
+                generation: 7,
+                items_generation: 7,
+                playlist: Loadable::Loaded(Playlist {
+                    id: "best".into(),
+                    snapshot_id: Some("old".into()),
+                    items_count: Some(TrackCount { total: 1 }),
+                    ..Default::default()
+                }),
+                items: PagedList {
+                    items: vec![cached_playlist_row("spotify:track:one")],
+                    total: Some(1),
+                    next_offset: None,
+                    loaded_once: true,
+                    ..Default::default()
+                },
+                cache_checked: true,
+                cache_saved_through: Some(1),
+                ..Default::default()
+            },
+        );
+        let added = cached_playlist_row("spotify:track:honey")
+            .playable()
+            .unwrap()
+            .clone();
+
+        app.apply(
+            Action::ConfirmAddToPlaylist {
+                playlist_id: "best".into(),
+                playlist_name: "The best music ever".into(),
+                items: vec![added],
+            },
+            &egui::Context::default(),
+        );
+
+        let page = &app.playlist_pages["best"];
+        assert_eq!(page.items.items.len(), 2, "the new row is shown at once");
+        assert_eq!(page.items.total, Some(2));
+        assert_eq!(page.items.next_offset, None);
+        assert_eq!(
+            page.items.items[0].playable().map(PlayableItem::uri),
+            Some("spotify:track:one"),
+            "the held rows are not discarded"
+        );
+        assert!(page.local_additions.contains("spotify:track:honey"));
+        assert_eq!(page.cache_saved_through, None);
+
+        app.handle_api(ApiResponse::PlaylistItemsChanged {
+            id: "best".into(),
+            message: "Added to The best music ever".into(),
+            result: Ok(Some("new".into())),
+        });
+
+        let page = &app.playlist_pages["best"];
+        assert_eq!(page.items.items.len(), 2);
+        assert_eq!(
+            page.playlist
+                .get()
+                .and_then(|playlist| playlist.snapshot_id.as_deref()),
+            Some("new")
+        );
+        assert_eq!(
+            page.cache_saved_through,
+            Some(2),
+            "the optimistic rows become the cache for the returned snapshot"
+        );
+        assert_eq!(app.library.playlists.get().unwrap()[0].track_total(), 2);
+    }
+
+    #[test]
+    fn stale_playlist_metadata_cannot_undo_a_successful_write() {
+        let mut app = headless_app();
+        app.backend.set_offline(true);
+        app.playlist_pages.insert(
+            "best".into(),
+            PlaylistPage {
+                generation: 4,
+                playlist: Loadable::Loaded(Playlist {
+                    id: "best".into(),
+                    snapshot_id: Some("before".into()),
+                    items_count: Some(TrackCount { total: 2 }),
+                    ..Default::default()
+                }),
+                items: PagedList {
+                    items: vec![
+                        cached_playlist_row("spotify:track:one"),
+                        cached_playlist_row("spotify:track:honey"),
+                    ],
+                    total: Some(2),
+                    next_offset: None,
+                    loaded_once: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        app.handle_api(ApiResponse::PlaylistItemsChanged {
+            id: "best".into(),
+            message: String::new(),
+            result: Ok(Some("after".into())),
+        });
+
+        app.handle_api(ApiResponse::Playlist {
+            id: "best".into(),
+            generation: 4,
+            result: Ok(Playlist {
+                id: "best".into(),
+                snapshot_id: Some("before".into()),
+                items_count: Some(TrackCount { total: 1 }),
+                ..Default::default()
+            }),
+        });
+
+        let page = &app.playlist_pages["best"];
+        assert_eq!(
+            page.playlist
+                .get()
+                .and_then(|playlist| playlist.snapshot_id.as_deref()),
+            Some("after")
+        );
+        assert_eq!(page.items.total, Some(2));
+        assert_eq!(page.items.items.len(), 2);
+        assert_eq!(page.snapshot_rechecks, 1);
+
+        app.handle_api(ApiResponse::Playlist {
+            id: "best".into(),
+            generation: 4,
+            result: Ok(Playlist {
+                id: "best".into(),
+                snapshot_id: Some("after".into()),
+                items_count: Some(TrackCount { total: 2 }),
+                ..Default::default()
+            }),
+        });
+
+        let page = &app.playlist_pages["best"];
+        assert_eq!(page.optimistic_snapshot, None);
+        assert_eq!(page.snapshot_rechecks, 0);
+        assert_eq!(page.items.total, Some(2));
+    }
+
+    #[test]
+    fn market_specific_track_uris_share_the_liked_state() {
+        let mut app = headless_app();
+        let recording = |uri: &str| Track {
+            uri: uri.into(),
+            external_ids: crate::api::models::ExternalIds {
+                isrc: Some("GBUM71029604".into()),
+            },
+            ..Default::default()
+        };
+        let saved_uri = "spotify:track:original";
+        let playing_uri = "spotify:track:playable";
+
+        app.remember_track_recording(&recording(saved_uri));
+        app.set_saved_state(saved_uri.into(), true);
+        app.remember_track_recording(&recording(playing_uri));
+
+        assert_eq!(app.is_saved(playing_uri), Some(true));
+        assert_eq!(app.saved_toggle_targets(playing_uri), vec![saved_uri]);
+    }
+
+    #[test]
+    fn a_stale_contains_answer_does_not_undo_a_liked_song() {
+        let mut app = headless_app();
+        app.backend.set_offline(true);
+        let uri = "spotify:track:honey";
+        app.apply(Action::ToggleSaved(uri.into()), &egui::Context::default());
+        assert_eq!(app.is_saved(uri), Some(true));
+
+        app.handle_api(ApiResponse::Contains {
+            uris: vec![uri.into()],
+            result: Ok(vec![false]),
+        });
+
+        assert_eq!(
+            app.is_saved(uri),
+            Some(true),
+            "the answer from before the click cannot make the heart flicker"
+        );
     }
 
     #[test]
@@ -7710,8 +8318,13 @@ mod tests {
         app.handle_api(ApiResponse::PlaylistDuplicatesChecked {
             playlist_id: "mix".into(),
             playlist_name: "Night mix".into(),
-            uris: vec!["spotify:track:again".into()],
-            result: Ok(1),
+            items: vec![
+                cached_playlist_row("spotify:track:again")
+                    .playable()
+                    .unwrap()
+                    .clone(),
+            ],
+            result: Ok(vec!["spotify:track:again".into()]),
         });
 
         assert!(!app.playlist_busy, "the confirmation is interactive");
@@ -7719,16 +8332,21 @@ mod tests {
             app.dialog,
             Some(Dialog::ConfirmPlaylistDuplicates {
                 ref playlist_id,
-                duplicate_count: 1,
+                ref duplicate_uris,
                 ..
-            }) if playlist_id == "mix"
+            }) if playlist_id == "mix" && duplicate_uris.len() == 1
         ));
 
         app.apply(
             Action::ConfirmAddToPlaylist {
                 playlist_id: "mix".into(),
                 playlist_name: "Night mix".into(),
-                uris: vec!["spotify:track:again".into()],
+                items: vec![
+                    cached_playlist_row("spotify:track:again")
+                        .playable()
+                        .unwrap()
+                        .clone(),
+                ],
             },
             &egui::Context::default(),
         );
@@ -7746,8 +8364,13 @@ mod tests {
         app.handle_api(ApiResponse::PlaylistDuplicatesChecked {
             playlist_id: "mix".into(),
             playlist_name: "Night mix".into(),
-            uris: vec!["spotify:track:new".into()],
-            result: Ok(0),
+            items: vec![
+                cached_playlist_row("spotify:track:new")
+                    .playable()
+                    .unwrap()
+                    .clone(),
+            ],
+            result: Ok(Vec::new()),
         });
 
         assert!(app.dialog.is_none());

@@ -465,12 +465,12 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
     app.keep_picked_rows_for(&table.page, &view);
     let picked: std::collections::BTreeSet<usize> =
         app.picked_rows(&table.page).cloned().unwrap_or_default();
-    // Keep names with URIs for immediate optimistic queue rows.
-    let picked_songs: Vec<(String, String)> = picked
+    // Keep complete rows for immediate optimistic playlist additions.
+    let picked_songs: Vec<PlayableItem> = picked
         .iter()
         .filter_map(|row| entry.visible.get(*row))
         .filter_map(|index| table.items.get(*index))
-        .map(|(item, _, _)| (item.uri().to_string(), item.name().to_string()))
+        .map(|(item, _, _)| item.clone())
         .collect();
     let rows = entry.visible.len();
     let mut pick = None;
@@ -1270,6 +1270,8 @@ mod tests {
                         external_urls: Default::default(),
                     }),
                     popularity: None,
+                    external_ids: Default::default(),
+                    linked_from: None,
                     external_urls: Default::default(),
                 };
                 (

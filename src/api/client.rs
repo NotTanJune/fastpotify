@@ -648,14 +648,14 @@ impl ApiClient {
         .await
     }
 
-    /// Number of requested songs already present in a playlist.
+    /// Requested songs already present in a playlist.
     ///
     /// Spotify has no membership endpoint for playlists, so walk its pages
     /// until every requested URI has been found or the playlist ends.
-    pub async fn playlist_duplicate_count(&self, id: &str, uris: &[String]) -> Result<usize> {
+    pub async fn playlist_duplicates(&self, id: &str, uris: &[String]) -> Result<Vec<String>> {
         let wanted: HashSet<&str> = uris.iter().map(String::as_str).collect();
         if wanted.is_empty() {
-            return Ok(0);
+            return Ok(Vec::new());
         }
         let mut found = HashSet::new();
         let mut offset = 0;
@@ -679,7 +679,11 @@ impl ApiClient {
             };
             offset = next;
         }
-        Ok(found.len())
+        Ok(uris
+            .iter()
+            .filter(|uri| found.contains(uri.as_str()))
+            .cloned()
+            .collect())
     }
 
     pub async fn create_playlist(

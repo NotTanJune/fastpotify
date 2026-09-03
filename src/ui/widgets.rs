@@ -248,12 +248,12 @@ pub fn menu_frame(palette: &Palette) -> egui::Frame {
 /// Context menu for actions on selected tracks.
 ///
 /// Tracks stay in table order rather than selection order.
-pub fn picked_menu(ui: &mut Ui, app: &mut App, songs: &[(String, String)]) {
+pub fn picked_menu(ui: &mut Ui, app: &mut App, songs: &[PlayableItem]) {
     let palette = app.palette;
     ui.set_min_width(220.0);
     ui.set_max_width(300.0);
     let count = songs.len();
-    let uris: Vec<String> = songs.iter().map(|(uri, _)| uri.clone()).collect();
+    let uris: Vec<String> = songs.iter().map(|item| item.uri().to_string()).collect();
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         ui.add_space(10.0);
@@ -267,7 +267,10 @@ pub fn picked_menu(ui: &mut Ui, app: &mut App, songs: &[(String, String)]) {
     menu_separator(ui, &palette);
     if menu_item(ui, &palette, Some(Icon::ListEnd), "Play next") {
         app.actions.push(Action::QueueMany {
-            songs: songs.to_vec(),
+            songs: songs
+                .iter()
+                .map(|item| (item.uri().to_string(), item.name().to_string()))
+                .collect(),
         });
     }
     // Set one explicit saved state for the full selection.
@@ -305,7 +308,7 @@ pub fn picked_menu(ui: &mut Ui, app: &mut App, songs: &[(String, String)]) {
                         app.actions.push(Action::AddToPlaylist {
                             playlist_id: id.clone(),
                             playlist_name: name.clone(),
-                            uris: uris.clone(),
+                            items: songs.to_vec(),
                         });
                     }
                 }
@@ -363,7 +366,7 @@ pub fn item_menu(
                             app.actions.push(Action::AddToPlaylist {
                                 playlist_id: id.clone(),
                                 playlist_name: name.clone(),
-                                uris: vec![uri.clone()],
+                                items: vec![item.clone()],
                             });
                         }
                     }
@@ -544,11 +547,10 @@ pub struct TrackRow<'a> {
     pub shift: f32,
     /// Whether this row is one of the picked-out ones.
     pub picked: bool,
-    /// Every picked-out song in this table, as uri and name, in the order
-    /// they sit in it, so the menu on a picked row can act on all of them
-    /// and the queue can show their names before Spotify answers. Empty
-    /// where a list does not offer picking.
-    pub picked_songs: &'a [(String, String)],
+    /// Every picked-out song in this table, in the order they sit in it, so
+    /// the menu can update a destination playlist before Spotify answers.
+    /// Empty where a list does not offer picking.
+    pub picked_songs: &'a [PlayableItem],
 }
 
 /// Draw each credited artist separately so its Spotify id remains clickable.
@@ -655,6 +657,7 @@ pub fn track_row(ui: &mut Ui, app: &mut App, row: TrackRow<'_>) -> Option<RowPic
                 uri: row.item.uri().to_string(),
                 title: row.item.name().to_string(),
                 image: row.item.image(64).map(str::to_string),
+                item: row.item.clone(),
                 from,
             },
         );

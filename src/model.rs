@@ -427,6 +427,15 @@ pub struct PlaylistPage {
     pub pending_cache: Option<PlaylistCache>,
     /// One-based position entered in the direct page control.
     pub jump_position: u32,
+    /// Songs added here that may sit beyond the loaded prefix. They are known
+    /// members immediately, even before Spotify's next read catches up.
+    pub local_additions: std::collections::BTreeSet<String>,
+    /// Snapshot returned by the latest successful write. A lagging metadata
+    /// read must not replace it with the snapshot from before that write.
+    pub optimistic_snapshot: Option<String>,
+    /// Number of immediate metadata reads made while Spotify still reported
+    /// the pre-write snapshot.
+    pub snapshot_rechecks: u8,
 }
 
 /// A contiguous playlist prefix on disk, valid for exactly one snapshot.
@@ -537,6 +546,8 @@ pub struct DragTrack {
     pub title: String,
     /// Cover art for the drag preview.
     pub image: Option<String>,
+    /// Full row data, so dropping can update an open playlist immediately.
+    pub item: PlayableItem,
     /// Source playlist ID and row index for moves within an editable playlist.
     pub from: Option<(String, u32)>,
 }
@@ -570,8 +581,8 @@ pub enum Dialog {
     ConfirmPlaylistDuplicates {
         playlist_id: String,
         playlist_name: String,
-        uris: Vec<String>,
-        duplicate_count: usize,
+        items: Vec<PlayableItem>,
+        duplicate_uris: Vec<String>,
     },
     Shortcuts,
     /// The signed-in account is not Premium, so nothing will play.
@@ -649,12 +660,12 @@ pub enum Action {
     AddToPlaylist {
         playlist_id: String,
         playlist_name: String,
-        uris: Vec<String>,
+        items: Vec<PlayableItem>,
     },
     ConfirmAddToPlaylist {
         playlist_id: String,
         playlist_name: String,
-        uris: Vec<String>,
+        items: Vec<PlayableItem>,
     },
     RemoveFromPlaylist {
         playlist_id: String,

@@ -125,7 +125,7 @@ pub enum ApiRequest {
     CheckPlaylistDuplicates {
         playlist_id: String,
         playlist_name: String,
-        uris: Vec<String>,
+        items: Vec<PlayableItem>,
     },
     AddToPlaylist {
         playlist_id: String,
@@ -317,8 +317,8 @@ pub enum ApiResponse {
     PlaylistDuplicatesChecked {
         playlist_id: String,
         playlist_name: String,
-        uris: Vec<String>,
-        result: ApiResult<usize>,
+        items: Vec<PlayableItem>,
+        result: ApiResult<Vec<String>>,
     },
     PlaylistItemsChanged {
         id: String,
@@ -1968,13 +1968,16 @@ async fn handle(api: &ApiGateway, request: ApiRequest) -> (ApiResponse, Option<A
         ApiRequest::CheckPlaylistDuplicates {
             playlist_id,
             playlist_name,
-            uris,
-        } => ApiResponse::PlaylistDuplicatesChecked {
-            result: routed!(playlist_duplicate_count(&playlist_id, &uris)),
-            playlist_id,
-            playlist_name,
-            uris,
-        },
+            items,
+        } => {
+            let uris: Vec<String> = items.iter().map(|item| item.uri().to_string()).collect();
+            ApiResponse::PlaylistDuplicatesChecked {
+                result: routed!(playlist_duplicates(&playlist_id, &uris)),
+                playlist_id,
+                playlist_name,
+                items,
+            }
+        }
         ApiRequest::AddToPlaylist {
             playlist_id,
             playlist_name,
