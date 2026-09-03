@@ -3393,9 +3393,9 @@ impl App {
                         }
                         if let Some(page) = self.playlist_pages.get_mut(&id) {
                             if let Some(playlist) = page.playlist.get_mut()
-                                && snapshot.is_some()
+                                && let Some(snapshot) = &snapshot
                             {
-                                playlist.snapshot_id = snapshot;
+                                playlist.snapshot_id = Some(snapshot.clone());
                             }
                             page.items.reset();
                             page.contributors.clear();
@@ -3409,10 +3409,9 @@ impl App {
                         }
                         if let Some(playlists) = self.library.playlists.get_mut() {
                             for playlist in playlists.iter_mut().filter(|p| p.id == id) {
-                                playlist.snapshot_id = None;
+                                playlist.snapshot_id = snapshot.clone();
                             }
                         }
-                        self.load_playlists();
                     }
                     Err(error) => {
                         self.toast_error(format!("Playlist change failed: {error}"));
@@ -7278,6 +7277,54 @@ mod tests {
             })),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn changing_playlist_items_keeps_the_library_visible() {
+        let mut app = headless_app();
+        app.library.playlists = Loadable::Loaded(vec![
+            Playlist {
+                id: "changed".into(),
+                snapshot_id: Some("old".into()),
+                ..Default::default()
+            },
+            Playlist {
+                id: "untouched".into(),
+                snapshot_id: Some("same".into()),
+                ..Default::default()
+            },
+        ]);
+        app.playlist_pages.insert(
+            "changed".into(),
+            PlaylistPage {
+                playlist: Loadable::Loaded(Playlist {
+                    id: "changed".into(),
+                    snapshot_id: Some("old".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+
+        app.handle_api(ApiResponse::PlaylistItemsChanged {
+            id: "changed".into(),
+            message: "Added to Playlist".into(),
+            result: Ok(Some("new".into())),
+        });
+
+        let playlists = app
+            .library
+            .playlists
+            .get()
+            .expect("the loaded library stays on screen");
+        assert_eq!(playlists.len(), 2);
+        assert_eq!(playlists[0].snapshot_id.as_deref(), Some("new"));
+        assert_eq!(playlists[1].snapshot_id.as_deref(), Some("same"));
+        let open = app.playlist_pages["changed"]
+            .playlist
+            .get()
+            .expect("the playlist page");
+        assert_eq!(open.snapshot_id.as_deref(), Some("new"));
     }
 
     #[test]
