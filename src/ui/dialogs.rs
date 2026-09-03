@@ -76,6 +76,53 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         }
                     });
                 }
+                Dialog::ConfirmPlaylistDuplicates {
+                    playlist_id,
+                    playlist_name,
+                    uris,
+                    duplicate_count,
+                } => {
+                    let multiple = uris.len() > 1;
+                    theme::text(
+                        ui,
+                        if multiple {
+                            "Songs already in this playlist"
+                        } else {
+                            "Song already in this playlist"
+                        },
+                        theme::bold(20.0),
+                        palette.text,
+                    );
+                    ui.add_space(8.0);
+                    let body = if multiple {
+                        format!(
+                            "“{playlist_name}” already contains {duplicate_count} of these songs. Add them anyway?"
+                        )
+                    } else {
+                        format!("“{playlist_name}” already contains this song. Add it again?")
+                    };
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(body)
+                                .font(theme::regular(14.0))
+                                .color(palette.secondary),
+                        )
+                        .wrap(),
+                    );
+                    ui.add_space(20.0);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if theme::pill_button(ui, &palette, "Add anyway", true).clicked() {
+                            app.actions.push(Action::ConfirmAddToPlaylist {
+                                playlist_id: playlist_id.clone(),
+                                playlist_name: playlist_name.clone(),
+                                uris: uris.clone(),
+                            });
+                        }
+                        if theme::pill_button(ui, &palette, "Cancel", false).clicked() {
+                            app.actions.push(Action::CloseDialog);
+                        }
+                    });
+                }
                 Dialog::Shortcuts => {
                     theme::text(ui, "Keyboard shortcuts", theme::bold(20.0), palette.text);
                     ui.add_space(12.0);

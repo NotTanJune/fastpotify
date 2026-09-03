@@ -567,6 +567,12 @@ pub enum Dialog {
         name: String,
         owned: bool,
     },
+    ConfirmPlaylistDuplicates {
+        playlist_id: String,
+        playlist_name: String,
+        uris: Vec<String>,
+        duplicate_count: usize,
+    },
     Shortcuts,
     /// The signed-in account is not Premium, so nothing will play.
     PremiumNeeded,
@@ -641,6 +647,11 @@ pub enum Action {
         saved: bool,
     },
     AddToPlaylist {
+        playlist_id: String,
+        playlist_name: String,
+        uris: Vec<String>,
+    },
+    ConfirmAddToPlaylist {
         playlist_id: String,
         playlist_name: String,
         uris: Vec<String>,

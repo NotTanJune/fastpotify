@@ -621,6 +621,14 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                     add_uris: vec!["spotify:track:trk1".into()],
                 })
             }
+            "duplicate" => {
+                app.dialog = Some(Dialog::ConfirmPlaylistDuplicates {
+                    playlist_id: "pl1".into(),
+                    playlist_name: "Long Way Home".into(),
+                    uris: vec!["spotify:track:trk1".into()],
+                    duplicate_count: 1,
+                })
+            }
             "light" => {
                 app.settings.theme = crate::settings::ThemeChoice::Light;
                 app.actions.push(Action::SettingsChanged);
@@ -1272,6 +1280,12 @@ mod tests {
                 id: "pl1".into(),
                 name: "x".into(),
                 owned: true,
+            },
+            Dialog::ConfirmPlaylistDuplicates {
+                playlist_id: "pl1".into(),
+                playlist_name: "x".into(),
+                uris: vec!["spotify:track:trk1".into()],
+                duplicate_count: 1,
             },
         ] {
             app.dialog = Some(dialog);

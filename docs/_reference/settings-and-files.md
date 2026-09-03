@@ -118,8 +118,8 @@ settings.
 
 `--demo-page` opens a page, such as `home`, `playlist:pl1`, or `artist:art0`,
 and `--demo-show` adds surfaces on top of it: a comma separated list of
-`queue`, `devices`, `shortcuts`, `premium`, `create`, `light`, `focus`, `winamp`,
-`playlist`, `eq`, `eq-shade`, and `compact`.
+`queue`, `devices`, `shortcuts`, `premium`, `create`, `duplicate`, `light`,
+`focus`, `winamp`, `playlist`, `eq`, `eq-shade`, and `compact`.
 
 `--demo-shot <PATH>` writes the window to a PNG and exits, which is how the
 screenshots in these pages are made:

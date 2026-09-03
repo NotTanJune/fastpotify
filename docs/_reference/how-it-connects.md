@@ -59,6 +59,11 @@ that happens, Fastpotify stops local playback and leaves the rest of the queue
 alone instead of treating every following track as unavailable. This refusal
 comes from Spotify; trying again later may work.
 
+Before adding songs to an existing playlist, Fastpotify reads its entries on
+the background runtime. When it finds a duplicate, the interface asks whether
+to add another copy. If Spotify cannot answer that read, Fastpotify preserves
+the requested edit and lets the playlist write report its own result.
+
 ## Receivers on the local network
 
 Spotify's device list only shows signed-in receivers. A new librespot or

@@ -4,6 +4,7 @@
 //! concurrency, honors `Retry-After`, and formats API errors. The gateway
 //! handles capability differences before dispatch.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -645,6 +646,40 @@ impl ApiClient {
             ],
         )
         .await
+    }
+
+    /// Number of requested songs already present in a playlist.
+    ///
+    /// Spotify has no membership endpoint for playlists, so walk its pages
+    /// until every requested URI has been found or the playlist ends.
+    pub async fn playlist_duplicate_count(&self, id: &str, uris: &[String]) -> Result<usize> {
+        let wanted: HashSet<&str> = uris.iter().map(String::as_str).collect();
+        if wanted.is_empty() {
+            return Ok(0);
+        }
+        let mut found = HashSet::new();
+        let mut offset = 0;
+        loop {
+            let page = self.playlist_items(id, offset, 50).await?;
+            for uri in page
+                .items
+                .iter()
+                .filter_map(PlaylistItem::playable)
+                .map(PlayableItem::uri)
+            {
+                if wanted.contains(uri) {
+                    found.insert(uri.to_string());
+                }
+            }
+            if found.len() == wanted.len() {
+                break;
+            }
+            let Some(next) = page.next_offset() else {
+                break;
+            };
+            offset = next;
+        }
+        Ok(found.len())
     }
 
     pub async fn create_playlist(

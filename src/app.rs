@@ -3470,6 +3470,37 @@ impl App {
                     }
                 }
             }
+            ApiResponse::PlaylistDuplicatesChecked {
+                playlist_id,
+                playlist_name,
+                uris,
+                result,
+            } => match result {
+                Ok(0) => self.backend.api(ApiRequest::AddToPlaylist {
+                    playlist_id,
+                    playlist_name,
+                    uris,
+                }),
+                Ok(duplicate_count) => {
+                    self.playlist_busy = false;
+                    self.dialog = Some(Dialog::ConfirmPlaylistDuplicates {
+                        playlist_id,
+                        playlist_name,
+                        uris,
+                        duplicate_count,
+                    });
+                }
+                Err(error) => {
+                    // A failed read must not take away an edit the account is
+                    // still allowed to make. The write reports its own error.
+                    log::debug!("could not check playlist for duplicates: {error}");
+                    self.backend.api(ApiRequest::AddToPlaylist {
+                        playlist_id,
+                        playlist_name,
+                        uris,
+                    });
+                }
+            },
             ApiResponse::PlaylistItemsChanged {
                 id,
                 message,
@@ -5027,6 +5058,19 @@ impl App {
                 playlist_name,
                 uris,
             } => {
+                self.playlist_busy = true;
+                self.backend.api(ApiRequest::CheckPlaylistDuplicates {
+                    playlist_id,
+                    playlist_name,
+                    uris,
+                });
+            }
+            Action::ConfirmAddToPlaylist {
+                playlist_id,
+                playlist_name,
+                uris,
+            } => {
+                self.dialog = None;
                 self.playlist_busy = true;
                 self.backend.api(ApiRequest::AddToPlaylist {
                     playlist_id,
@@ -7624,6 +7668,59 @@ mod tests {
             .get()
             .expect("the playlist page");
         assert_eq!(open.snapshot_id.as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn adding_an_existing_song_asks_before_writing_it_again() {
+        let mut app = headless_app();
+        app.backend.set_offline(true);
+        app.playlist_busy = true;
+
+        app.handle_api(ApiResponse::PlaylistDuplicatesChecked {
+            playlist_id: "mix".into(),
+            playlist_name: "Night mix".into(),
+            uris: vec!["spotify:track:again".into()],
+            result: Ok(1),
+        });
+
+        assert!(!app.playlist_busy, "the confirmation is interactive");
+        assert!(matches!(
+            app.dialog,
+            Some(Dialog::ConfirmPlaylistDuplicates {
+                ref playlist_id,
+                duplicate_count: 1,
+                ..
+            }) if playlist_id == "mix"
+        ));
+
+        app.apply(
+            Action::ConfirmAddToPlaylist {
+                playlist_id: "mix".into(),
+                playlist_name: "Night mix".into(),
+                uris: vec!["spotify:track:again".into()],
+            },
+            &egui::Context::default(),
+        );
+
+        assert!(app.dialog.is_none());
+        assert!(app.playlist_busy, "the confirmed write is in flight");
+    }
+
+    #[test]
+    fn a_song_not_in_the_playlist_needs_no_confirmation() {
+        let mut app = headless_app();
+        app.backend.set_offline(true);
+        app.playlist_busy = true;
+
+        app.handle_api(ApiResponse::PlaylistDuplicatesChecked {
+            playlist_id: "mix".into(),
+            playlist_name: "Night mix".into(),
+            uris: vec!["spotify:track:new".into()],
+            result: Ok(0),
+        });
+
+        assert!(app.dialog.is_none());
+        assert!(app.playlist_busy, "the playlist write follows the check");
     }
 
     #[test]
