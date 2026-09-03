@@ -1263,7 +1263,9 @@ impl App {
                 self.local_playback = LocalPlayback::Unavailable;
                 self.remote = None;
                 self.rootlist.clear();
+                self.rootlist_cache = None;
                 self.editable_by_grant.clear();
+                self.session_dirty = true;
                 self.reset_data();
             }
             AuthStatus::Failed(message) => {
@@ -8808,6 +8810,12 @@ mod tests {
         assert!(
             restored.editable_by_grant.is_empty(),
             "cached order must not cache a stale edit grant"
+        );
+        restored.handle_auth(AuthStatus::SignedOut);
+        assert!(restored.rootlist.is_empty());
+        assert_eq!(
+            restored.rootlist_cache, None,
+            "signing out removes the account's cached tree"
         );
         drop(restored);
         let _ = std::fs::remove_dir_all(root);
