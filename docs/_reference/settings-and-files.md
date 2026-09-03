@@ -89,6 +89,7 @@ main fields are:
 | `keep_playing_in_background` | `true` | Close to tray |
 | `check_for_updates` | `true` | Ask GitHub once a day for a newer release |
 | `web_client_id` | none | Optional personal Spotify app id used alongside shared coverage |
+| `personal_app_nudge_at` | none | Last slow-Spotify personal-app reminder, so it appears at most once a day |
 
 ## Command line
 

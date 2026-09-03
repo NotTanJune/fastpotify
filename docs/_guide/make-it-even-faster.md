@@ -9,7 +9,9 @@ nav_order: 6
 Fastpotify loads library and catalogue data through Spotify's Web API, which
 is rate-limited per *app*. By default, Fastpotify shares a public app with
 several other open-source players. When that app reaches its limit, requests
-are delayed and the top bar shows a spinner.
+are delayed and the top bar shows a spinner. If Web API work stays busy for
+five seconds and no personal app is configured, Fastpotify reminds you to set
+one up in Settings at most once every 24 hours.
 
 A personal app gives supported requests a separate Development Mode quota.
 Creating one is free and takes a few minutes.

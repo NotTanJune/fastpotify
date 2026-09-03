@@ -334,6 +334,11 @@ impl ApiClient {
         };
         let provider = self.provider()?;
         let started = Instant::now();
+        // This is one logical request even when it waits for another request
+        // or for a Retry-After cooldown. Keep the interface's activity signal
+        // alive for that whole wait, not only while bytes are on the wire.
+        self.activity.begin();
+        let _activity = ActivityGuard(&self.activity);
 
         let mut attempt = 0;
         loop {
@@ -344,8 +349,6 @@ impl ApiClient {
                 .acquire()
                 .await
                 .map_err(|_| ApiError::NotSignedIn)?;
-            self.activity.begin();
-            let activity = ActivityGuard(&self.activity);
             let token = provider.access_token().await?;
             let mut request = self
                 .http
@@ -361,7 +364,6 @@ impl ApiClient {
             let status = response.status();
 
             if status == StatusCode::UNAUTHORIZED && attempt == 1 {
-                drop(activity);
                 drop(permit);
                 provider.invalidate().await;
                 continue;
@@ -384,13 +386,11 @@ impl ApiClient {
                     self.source,
                     wait.as_millis()
                 );
-                drop(activity);
                 drop(permit);
                 self.extend_cooldown(wait).await;
                 continue;
             }
             if status.is_server_error() && method == Method::GET && attempt == 1 {
-                drop(activity);
                 drop(permit);
                 tokio::time::sleep(Duration::from_millis(800)).await;
                 continue;

@@ -36,6 +36,13 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(280);
 const RESTART_BEFORE_PREVIOUS: u32 = 3_000;
 
 const TOAST_LIFETIME: Duration = Duration::from_millis(3200);
+/// Match other interface animations. egui subtracts the predicted frame time
+/// from delayed repaints, so 33 ms drives roughly one frame per 16 ms.
+const TOAST_FRAME: Duration = Duration::from_millis(33);
+const PERSONAL_APP_NUDGE_AFTER: Duration = Duration::from_secs(5);
+const PERSONAL_APP_NUDGE_INTERVAL: jiff::SignedDuration = jiff::SignedDuration::from_hours(24);
+const PERSONAL_APP_NUDGE: &str =
+    "Spotify is taking a while. Set up a personal app in Settings for a separate API quota";
 const OPTIMISTIC_HOLD: Duration = Duration::from_millis(2500);
 
 /// How long a newly started context remains visible while Spotify catches up.
@@ -1592,6 +1599,8 @@ impl App {
         }
         self.toasts
             .retain(|toast| toast.created.elapsed() < TOAST_LIFETIME);
+        let spotify_slow = self.backend.activity().busy(PERSONAL_APP_NUDGE_AFTER);
+        self.maybe_suggest_personal_app(spotify_slow, jiff::Timestamp::now());
 
         if self.settings.check_for_updates
             && !self.offline
@@ -5407,6 +5416,20 @@ impl App {
         });
     }
 
+    fn maybe_suggest_personal_app(&mut self, spotify_slow: bool, now: jiff::Timestamp) {
+        if !spotify_slow
+            || self.settings.web_client_id.is_some()
+            || !self.is_connected()
+            || self.offline
+            || !personal_app_nudge_due(self.settings.personal_app_nudge_at.as_deref(), now)
+        {
+            return;
+        }
+        self.settings.personal_app_nudge_at = Some(now.to_string());
+        self.settings_dirty = true;
+        self.toast(PERSONAL_APP_NUDGE);
+    }
+
     /// Selected row indices for `page`.
     pub fn picked_rows(&self, page: &Page) -> Option<&std::collections::BTreeSet<usize>> {
         self.selection
@@ -5623,7 +5646,7 @@ impl App {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
         if !self.toasts.is_empty() {
-            ctx.request_repaint_after(Duration::from_millis(120));
+            ctx.request_repaint_after(TOAST_FRAME);
         }
         if self.any_play_pending() {
             ctx.request_repaint_after(Duration::from_millis(120));
@@ -5793,6 +5816,14 @@ impl App {
         self.save_state();
         self.backend.shutdown();
     }
+}
+
+fn personal_app_nudge_due(last: Option<&str>, now: jiff::Timestamp) -> bool {
+    let Some(last) = last.and_then(|value| value.parse::<jiff::Timestamp>().ok()) else {
+        return true;
+    };
+    let elapsed = now.duration_since(last);
+    elapsed < jiff::SignedDuration::ZERO || elapsed >= PERSONAL_APP_NUDGE_INTERVAL
 }
 
 pub fn engine_config(
@@ -6884,6 +6915,55 @@ mod tests {
                 tray: false,
             },
         )
+    }
+
+    #[test]
+    fn slow_spotify_suggests_a_personal_app_once_a_day() {
+        let mut app = test_app("personal-app-nudge");
+        app.auth = AuthStatus::Connected {
+            username: "listener".into(),
+        };
+        let now: jiff::Timestamp = "2026-09-03T15:00:00Z".parse().unwrap();
+
+        app.maybe_suggest_personal_app(false, now);
+        assert!(app.toasts.is_empty(), "fast requests need no reminder");
+
+        app.maybe_suggest_personal_app(true, now);
+        assert_eq!(app.toasts.len(), 1);
+        assert_eq!(app.toasts[0].message, PERSONAL_APP_NUDGE);
+        assert_eq!(
+            app.settings.personal_app_nudge_at.as_deref(),
+            Some("2026-09-03T15:00:00Z")
+        );
+        assert!(app.settings_dirty, "the reminder time must be persisted");
+
+        app.maybe_suggest_personal_app(true, now + jiff::SignedDuration::from_hours(23));
+        assert_eq!(app.toasts.len(), 1, "the reminder must stay quiet today");
+
+        app.maybe_suggest_personal_app(true, now + PERSONAL_APP_NUDGE_INTERVAL);
+        assert_eq!(app.toasts.len(), 2, "the reminder returns after a day");
+    }
+
+    #[test]
+    fn configured_personal_app_suppresses_the_slow_spotify_reminder() {
+        let mut app = test_app("personal-app-nudge-configured");
+        app.auth = AuthStatus::Connected {
+            username: "listener".into(),
+        };
+        app.settings.web_client_id = Some("personal-client".into());
+
+        app.maybe_suggest_personal_app(true, jiff::Timestamp::now());
+
+        assert!(app.toasts.is_empty());
+    }
+
+    #[test]
+    fn missing_invalid_and_future_nudge_times_do_not_hide_the_reminder() {
+        let now: jiff::Timestamp = "2026-09-03T15:00:00Z".parse().unwrap();
+
+        assert!(personal_app_nudge_due(None, now));
+        assert!(personal_app_nudge_due(Some("not a timestamp"), now));
+        assert!(personal_app_nudge_due(Some("2026-09-04T15:00:00Z"), now));
     }
 
     fn play(uri: &str, at: &str) -> crate::api::models::PlayHistory {

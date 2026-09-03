@@ -87,6 +87,8 @@ pub struct Settings {
     /// An optional personal Spotify Web API application id. The shared
     /// application remains active for coverage when this is present.
     pub web_client_id: Option<String>,
+    /// When the slow-Spotify personal-app reminder was last shown.
+    pub personal_app_nudge_at: Option<String>,
     /// Local playback has been authorized at least once on this machine, so
     /// the app can resume it silently instead of prompting.
     pub playback_authorized: bool,
@@ -177,6 +179,7 @@ impl Default for Settings {
             search_history: Vec::new(),
             show_shortcut_hints: true,
             web_client_id: None,
+            personal_app_nudge_at: None,
             playback_authorized: false,
             keep_playing_in_background: true,
             check_for_updates: true,
@@ -360,6 +363,23 @@ mod tests {
         let json = serde_json::to_string(&settings).unwrap();
         let restored: Settings = serde_json::from_str(&json).unwrap();
         assert!(restored.tracklist_compact);
+    }
+
+    #[test]
+    fn personal_app_nudge_time_is_backward_compatible_and_round_trips() {
+        let older: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(older.personal_app_nudge_at, None);
+
+        let settings = Settings {
+            personal_app_nudge_at: Some("2026-09-03T15:00:00Z".into()),
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        let restored: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            restored.personal_app_nudge_at,
+            settings.personal_app_nudge_at
+        );
     }
 }
 
