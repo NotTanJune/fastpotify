@@ -127,7 +127,7 @@ sudo dnf install alsa-lib-devel pulseaudio-libs-devel libxkbcommon-devel \
 ```
 
 On Windows, libprojectM is built with Visual Studio 2022, CMake, LLVM, and
-vcpkg (`vcpkg install glew:x64-windows-static-md`, with
+vcpkg (`vcpkg install glew:x64-windows-static`, with
 `VCPKG_INSTALLATION_ROOT` pointing at the vcpkg folder).
 
 With [Nix](https://nixos.org), `nix develop` provides all of it, along with
