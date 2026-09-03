@@ -51,9 +51,14 @@ edit the previous comment when nobody has replied since it. Keep additional
 investigation notes private. Never use em dashes; use a full stop, comma,
 colon, or parentheses instead.
 
-When a log shows Web API rate limits with `source=shared`, direct the user to
+When an issue reports slow or throttled Web API requests, slow playlist or
+library loading, rate limits, or proposes an export or cache workaround for
+those problems, first direct the reporter to
 https://fastpotify.rocks/make-it-even-faster/ for the personal Client ID setup.
-Make clear that this changes supported Web API quota only; it cannot fix a
+Ask them to configure it and report what remains slow or throttled afterward;
+do this before asking for other diagnostic details. Make clear that the
+personal app gives supported Web API requests a separate quota while the
+shared app remains necessary for complete Spotify coverage. It cannot fix a
 librespot session or an `audio key 0 1` refusal.
 
 When reviewing a pull request, prioritize correctness, regressions, product
