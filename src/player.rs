@@ -818,7 +818,7 @@ pub fn editable_uris(
 }
 
 /// One row of the account's playlist tree.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RootlistEntry {
     /// A playlist, by its URI.
     Playlist(String),

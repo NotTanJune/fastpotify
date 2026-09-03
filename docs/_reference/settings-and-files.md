@@ -35,6 +35,10 @@ When the playlist has not changed on Spotify, reopening it resumes from that
 prefix instead of requesting the same pages again. Fastpotify validates the
 cache against Spotify's playlist snapshot before showing it.
 
+The last good playlist folder tree is kept in `session.json`, scoped to the
+account that supplied it. This keeps folders visible when local playback is
+temporarily unavailable. Live session data is still required for edit grants.
+
 Large playlist pages also have a **Go to song** control. Entering a song
 number loads its 50-item page directly, without requesting every earlier page.
 Filtering or sorting still covers the whole playlist, so either action returns

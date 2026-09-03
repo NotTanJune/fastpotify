@@ -20,7 +20,7 @@ use crate::model::QueueTab;
 use crate::model::*;
 use crate::paths::AppDirs;
 use crate::player::{EngineConfig, LoadSpec, LocalState, Playback, PlayerCommand, RepeatMode};
-use crate::settings::{SessionState, Settings, ThemeChoice};
+use crate::settings::{CachedRootlist, SessionState, Settings, ThemeChoice};
 use crate::single_instance::ControlCommand;
 use crate::theme::{self, Palette};
 use crate::tray::{TrayCommand, TrayService};
@@ -386,6 +386,8 @@ pub struct App {
     /// The account's playlist tree from Spotify, folders and all; empty
     /// until the session answers.
     pub rootlist: Vec<crate::player::RootlistEntry>,
+    /// Last good tree and the account it belongs to, kept across restarts.
+    rootlist_cache: Option<CachedRootlist>,
     /// Playlists the account may add songs to by Spotify's own word, by
     /// URI: the ones shared with it by invitation, which the Web API's
     /// collaborative flag does not show. Empty until the session answers.
@@ -624,6 +626,7 @@ impl App {
             manual_queue: Vec::new(),
             pending_queue_adds: Vec::new(),
             rootlist: Vec::new(),
+            rootlist_cache: session.rootlist.clone(),
             editable_by_grant: std::collections::BTreeSet::new(),
             pending_link: None,
             collapsed_folders: session.collapsed_folders.clone(),
@@ -1178,8 +1181,22 @@ impl App {
                 Event::Error(message) => self.toast_error(message),
                 Event::Rootlist { result } => match result {
                     Ok(rootlist) => {
+                        let account_id = self.user_id().map(str::to_owned).or_else(|| {
+                            if let AuthStatus::Connected { username } = &self.auth {
+                                Some(username.clone())
+                            } else {
+                                None
+                            }
+                        });
                         self.rootlist = rootlist.entries;
                         self.editable_by_grant = rootlist.editable;
+                        if let Some(account_id) = account_id {
+                            self.rootlist_cache = Some(CachedRootlist {
+                                account_id,
+                                entries: self.rootlist.clone(),
+                            });
+                            self.session_dirty = true;
+                        }
                     }
                     Err(error) => log::warn!("rootlist unavailable: {error}"),
                 },
@@ -1245,6 +1262,8 @@ impl App {
                 self.local_device_id = None;
                 self.local_playback = LocalPlayback::Unavailable;
                 self.remote = None;
+                self.rootlist.clear();
+                self.editable_by_grant.clear();
                 self.reset_data();
             }
             AuthStatus::Failed(message) => {
@@ -2973,6 +2992,15 @@ impl App {
                     if free && !self.premium_notice_shown {
                         self.premium_notice_shown = true;
                         self.dialog = Some(Dialog::PremiumNeeded);
+                    }
+                    if self.user_id() != Some(user.id.as_str()) {
+                        self.rootlist = self
+                            .rootlist_cache
+                            .as_ref()
+                            .filter(|cached| cached.account_id == user.id)
+                            .map(|cached| cached.entries.clone())
+                            .unwrap_or_default();
+                        self.editable_by_grant.clear();
                     }
                     self.user = Some(user);
                     let page = self.page().clone();
@@ -5924,6 +5952,7 @@ impl App {
                 last_track: self.resume_track.clone(),
                 last_position_ms: self.resume_position_ms,
                 collapsed_folders: self.collapsed_folders.clone(),
+                rootlist: self.rootlist_cache.clone(),
                 last_added_queue: if self.resume_queue.is_empty() {
                     self.manual_queue.clone()
                 } else {
@@ -8706,6 +8735,82 @@ mod tests {
             .map(|(id, _)| id)
             .collect();
         assert_eq!(editable, ["shared", "mine"]);
+    }
+
+    /// Folder order survives a restart, but only for the account that
+    /// supplied it; edit grants wait for a fresh session answer.
+    #[test]
+    fn the_last_playlist_tree_stays_visible_for_its_account() {
+        let root = std::env::temp_dir().join(format!(
+            "fastpotify-rootlist-restart-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let dirs = AppDirs {
+            config: root.join("config"),
+            state: root.join("state"),
+            cache: root.join("cache"),
+        };
+        let options = || AppOptions {
+            media_controls: false,
+            tray: false,
+        };
+        let entries = vec![
+            crate::player::RootlistEntry::FolderStart {
+                id: "folder".into(),
+                name: "Favorites".into(),
+            },
+            crate::player::RootlistEntry::Playlist("spotify:playlist:one".into()),
+            crate::player::RootlistEntry::FolderEnd,
+        ];
+        let mut app = App::new(
+            &Waker::default(),
+            dirs.clone(),
+            Settings::default(),
+            options(),
+        );
+        app.auth = AuthStatus::Connected {
+            username: "listener".into(),
+        };
+        app.user = Some(User {
+            id: "listener".into(),
+            ..User::default()
+        });
+        app.handle_backend_events(vec![Event::Rootlist {
+            result: Ok(crate::player::Rootlist {
+                entries: entries.clone(),
+                editable: ["spotify:playlist:one".to_string()].into_iter().collect(),
+            }),
+        }]);
+        assert!(app.session_dirty);
+        app.save_session();
+        drop(app);
+
+        let mut restored = App::new(
+            &Waker::default(),
+            dirs.clone(),
+            Settings::default(),
+            options(),
+        );
+        restored.handle_api(ApiResponse::Me(Ok(User {
+            id: "someone-else".into(),
+            ..User::default()
+        })));
+        assert!(
+            restored.rootlist.is_empty(),
+            "another account sees no cached tree"
+        );
+        restored.handle_api(ApiResponse::Me(Ok(User {
+            id: "listener".into(),
+            ..User::default()
+        })));
+        assert_eq!(restored.rootlist, entries);
+        assert!(
+            restored.editable_by_grant.is_empty(),
+            "cached order must not cache a stale edit grant"
+        );
+        drop(restored);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// Switching from Winamp back to the main window preserves the main

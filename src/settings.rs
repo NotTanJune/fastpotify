@@ -241,7 +241,7 @@ impl Settings {
         };
         let temporary = path.with_extension("json.tmp");
         let written =
-            std::fs::write(&temporary, text).and_then(|()| std::fs::rename(&temporary, path));
+            std::fs::write(&temporary, text).and_then(|()| replace_file(&temporary, path));
         if let Err(error) = written {
             log::warn!("unable to save settings to {}: {error}", path.display());
         }
@@ -383,6 +383,16 @@ mod tests {
     }
 }
 
+/// The last playlist tree received for one account.
+///
+/// Only folder order is cached. Edit grants must always come from the live
+/// session because they can be revoked.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CachedRootlist {
+    pub account_id: String,
+    pub entries: Vec<crate::player::RootlistEntry>,
+}
+
 /// Restorable UI session: what was open when the app last closed.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -404,6 +414,9 @@ pub struct SessionState {
     pub last_queue_rows: Vec<crate::api::models::PlayableItem>,
     /// Sidebar folders rolled up, by their rootlist ids.
     pub collapsed_folders: Vec<String>,
+    /// Last good playlist tree, scoped to the account that supplied it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rootlist: Option<CachedRootlist>,
     /// Shuffle mode saved across contexts and restarts.
     pub shuffle_on: bool,
     /// Each table's chosen sort, by encoded page, restored at start.
@@ -434,8 +447,104 @@ impl SessionState {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Ok(text) = serde_json::to_string(self) {
-            let _ = std::fs::write(path, text);
+        let text = match serde_json::to_string(self) {
+            Ok(text) => text,
+            Err(error) => {
+                log::warn!("unable to encode session: {error}");
+                return;
+            }
+        };
+        let temporary = path.with_extension("json.tmp");
+        let written =
+            std::fs::write(&temporary, text).and_then(|()| replace_file(&temporary, path));
+        if let Err(error) = written {
+            log::warn!("unable to save session to {}: {error}", path.display());
         }
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_file(temporary: &Path, path: &Path) -> std::io::Result<()> {
+    std::fs::rename(temporary, path)
+}
+
+#[cfg(windows)]
+fn replace_file(temporary: &Path, path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+
+    let temporary: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
+    let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let moved = unsafe {
+        MoveFileExW(
+            temporary.as_ptr(),
+            path.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::{CachedRootlist, SessionState};
+    use crate::player::RootlistEntry;
+
+    #[test]
+    fn old_sessions_without_a_playlist_tree_remain_readable() {
+        let state: SessionState = serde_json::from_str(r#"{"last_page":"home"}"#).unwrap();
+        assert_eq!(state.last_page.as_deref(), Some("home"));
+        assert_eq!(state.rootlist, None);
+    }
+
+    #[test]
+    fn the_playlist_tree_round_trips_with_its_account() {
+        let state = SessionState {
+            rootlist: Some(CachedRootlist {
+                account_id: "listener".into(),
+                entries: vec![
+                    RootlistEntry::FolderStart {
+                        id: "folder".into(),
+                        name: "Favorites".into(),
+                    },
+                    RootlistEntry::Playlist("spotify:playlist:one".into()),
+                    RootlistEntry::FolderEnd,
+                ],
+            }),
+            ..SessionState::default()
+        };
+
+        let json = serde_json::to_string(&state).unwrap();
+        assert_eq!(serde_json::from_str::<SessionState>(&json).unwrap(), state);
+    }
+
+    #[test]
+    fn a_new_session_atomically_replaces_the_previous_one() {
+        let root = std::env::temp_dir().join(format!(
+            "fastpotify-session-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let path = root.join("session.json");
+        let state = |page: &str| SessionState {
+            last_page: Some(page.into()),
+            ..SessionState::default()
+        };
+
+        state("home").save(&path);
+        state("liked").save(&path);
+
+        assert_eq!(
+            SessionState::load(&path).last_page.as_deref(),
+            Some("liked")
+        );
+        assert!(!path.with_extension("json.tmp").exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 }
