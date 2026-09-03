@@ -15,6 +15,17 @@ permissions:
 
 engine: copilot
 
+tools:
+  bash: false
+  cli-proxy: false
+  github:
+    allowed-repos:
+      - crmne/fastpotify
+    min-integrity: none
+    toolsets:
+      - issues
+      - repos
+
 safe-outputs:
   add-labels:
     issue-intent: true
