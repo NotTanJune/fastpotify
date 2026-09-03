@@ -19,7 +19,7 @@ browser engine.
 **Playback needs Spotify Premium.** Free accounts can browse and search, but
 cannot play music through Fastpotify on this computer or another device.
 
-![Fastpotify showing a playlist with the queue open and a track playing](/screenshot.png)
+![Fastpotify Home with the playlist library, recommendations, queue, and player visible](/screenshot.png)
 
 ## What it does
 

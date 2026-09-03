@@ -128,8 +128,8 @@ and `--demo-show` adds surfaces on top of it: a comma separated list of
 `queue`, `devices`, `shortcuts`, `premium`, `create`, `duplicate`, `light`,
 `focus`, `winamp`, `playlist`, `eq`, `eq-shade`, and `compact`.
 
-`--demo-shot <PATH>` writes the window to a PNG and exits, which is how the
-screenshots in these pages are made:
+`--demo-shot <PATH>` writes the window to a PNG and exits, which is useful for
+making deterministic screenshots for these pages:
 
 ```
 cargo run --release --features demo -- \

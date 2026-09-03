@@ -19,9 +19,9 @@ hero:
       link: https://github.com/crmne/fastpotify
   image:
     src: /screenshot.png
-    alt: "Fastpotify showing the Late night focus playlist with the queue panel open, a track playing, and the library in the sidebar"
-    width: 1894
-    height: 1037
+    alt: "Fastpotify Home with the playlist library, recommendations, queue, and player visible"
+    width: 2018
+    height: 1198
 
 features:
   - icon: ⚡

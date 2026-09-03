@@ -10,7 +10,7 @@ browser engine.
 **Playback needs Spotify Premium.** Free accounts can browse and search, but
 cannot play music through Fastpotify on this computer or another device.
 
-![Fastpotify showing a playlist, with the queue open and a track playing on a remote speaker](docs/screenshot.png)
+![Fastpotify Home with the playlist library, recommendations, queue, and player visible](docs/screenshot.png)
 
 See [fastpotify.rocks](https://fastpotify.rocks/) for installation, setup,
 everyday use, and connection details.
@@ -273,7 +273,7 @@ cargo run --features demo -- --demo --demo-page playlist:pl1 --demo-show queue
 ```
 
 Demo mode never writes settings. `--demo-shot <PATH>` writes the window to a
-PNG and exits, which is how the screenshot above is made.
+PNG and exits, which is useful for reproducible interface screenshots.
 
 ## Contributing
 
