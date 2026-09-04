@@ -113,7 +113,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         }
     });
     if !typing
-        && ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::K))
+        && ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::B))
         && let Some(now) = app.now_playing().filter(|now| !now.is_episode)
     {
         actions.push(Action::ToggleSaved(now.uri));
@@ -175,7 +175,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
         "Volume up or down",
     ),
     ("M", "Mute or unmute"),
-    ("K", "Like or unlike the playing song"),
+    ("B", "Like or unlike the playing song"),
     ("S", "Toggle shuffle"),
     ("R", "Cycle repeat"),
     ("Q", "Show the queue"),
@@ -265,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn k_toggles_the_playing_song_in_liked_songs() {
+    fn b_toggles_the_playing_song_in_liked_songs() {
         let root = std::env::temp_dir().join(format!(
             "fastpotify-like-shortcut-test-{}",
             std::process::id()
@@ -289,7 +289,7 @@ mod tests {
         let ctx = egui::Context::default();
         let input = egui::RawInput {
             events: vec![egui::Event::Key {
-                key: Key::K,
+                key: Key::B,
                 physical_key: None,
                 pressed: true,
                 repeat: false,
