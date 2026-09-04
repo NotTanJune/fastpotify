@@ -473,8 +473,11 @@ pub enum Command {
     DiscoverReceivers,
     /// Send the account to a receiver so it joins Spotify Connect.
     ActivateReceiver(Box<crate::zeroconf::Receiver>),
-    /// Ask GitHub whether a newer release exists.
-    CheckForUpdates,
+    /// Ask GitHub whether a newer release exists. Manual checks report every
+    /// outcome; the daily check only announces a new release.
+    CheckForUpdates {
+        manual: bool,
+    },
     /// The words of a track, from LRCLIB.
     Lyrics(Box<LyricsRequest>),
     /// The account's playlist tree, folders and all, from the session.
@@ -522,10 +525,10 @@ pub enum Event {
         color: [u8; 3],
     },
     Error(String),
-    /// A newer release than this build exists.
-    UpdateAvailable {
-        version: String,
-        url: String,
+    /// GitHub answered an update check, or the request failed.
+    UpdateChecked {
+        manual: bool,
+        result: Result<Option<crate::updates::Release>, String>,
     },
     /// Track lyrics, or `None` when unavailable.
     Lyrics {
@@ -906,7 +909,7 @@ impl Worker {
                 Command::Reconnect => self.reconnect_engine(),
                 Command::DiscoverReceivers => self.discover_receivers(),
                 Command::ActivateReceiver(receiver) => self.activate_receiver(*receiver),
-                Command::CheckForUpdates => self.check_for_updates(),
+                Command::CheckForUpdates { manual } => self.check_for_updates(manual),
                 Command::Lyrics(request) => self.fetch_lyrics(*request),
                 Command::Rootlist => self.fetch_rootlist(),
                 Command::VerifyResume => self.verify_resume(),
@@ -1478,22 +1481,16 @@ impl Worker {
         });
     }
 
-    fn check_for_updates(&self) {
+    fn check_for_updates(&self, manual: bool) {
         let http = self.http.clone();
         let events = self.events.clone();
         let waker = self.waker.clone();
         tokio::spawn(async move {
-            match crate::updates::newer_release(&http).await {
-                Ok(Some(release)) => {
-                    let _ = events.send(Event::UpdateAvailable {
-                        version: release.version,
-                        url: release.url,
-                    });
-                    waker.wake();
-                }
-                Ok(None) => log::debug!("this is the newest release"),
-                Err(error) => log::debug!("could not check for a newer release: {error:#}"),
-            }
+            let result = crate::updates::newer_release(&http)
+                .await
+                .map_err(|error| format!("{error:#}"));
+            let _ = events.send(Event::UpdateChecked { manual, result });
+            waker.wake();
         });
     }
 

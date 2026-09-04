@@ -330,7 +330,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         widgets::setting_row(
             ui,
             &palette,
-            "Check for updates",
+            "Automatic update checks",
             "Checks GitHub once a day. No personal data is sent.",
             |ui| {
                 if widgets::switch(ui, &palette, &mut app.settings.check_for_updates).changed() {
@@ -913,6 +913,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
+            let check_label = if app.update_checking {
+                "Checking…"
+            } else {
+                "Check for updates"
+            };
+            if theme::soft_button(ui, &palette, Some(Icon::Refresh), check_label, false).clicked()
+                && !app.update_checking
+            {
+                app.actions.push(Action::CheckForUpdates);
+            }
             if theme::soft_button(ui, &palette, Some(Icon::Info), "Keyboard shortcuts", false)
                 .clicked()
             {

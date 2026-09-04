@@ -248,6 +248,8 @@ autoplay, gapless playback, the audio backend (PulseAudio/PipeWire or ALSA on
 Linux), audio cache size, theme, sidebar state, whether pages take colour
 from artwork, and the mini player's skin and size.
 Playback settings apply when you press **Apply and restart playback**.
+You can also check for a new release from Settings. On macOS, the same command
+is in the application menu.
 
 Caches (audio, artwork) live under the cache directory and can be deleted at
 any time without signing you out.

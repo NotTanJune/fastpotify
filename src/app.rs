@@ -408,6 +408,7 @@ pub struct App {
     /// A newer release than this build, once GitHub has said so.
     pub update: Option<crate::updates::Release>,
     last_update_check: Option<Instant>,
+    pub update_checking: bool,
     /// Winamp window state and active skin.
     pub winamp: crate::winamp::WinampState,
 }
@@ -643,6 +644,7 @@ impl App {
             collapsed_folders: session.collapsed_folders.clone(),
             update: None,
             last_update_check: None,
+            update_checking: false,
             winamp: crate::winamp::WinampState::new(session.winamp_pos, tap, eq),
         };
         app.local.volume = app.settings.volume;
@@ -1315,12 +1317,30 @@ impl App {
                     self.set_user_name(id, name);
                 }
                 Event::WebApp { client_id } => self.web_app = client_id,
-                Event::UpdateAvailable { version, url } => {
-                    let notice = crate::updates::Release { version, url };
-                    if self.update.as_ref() != Some(&notice) {
-                        self.toast(format!("Fastpotify {} is available", notice.version));
+                Event::UpdateChecked { manual, result } => {
+                    self.update_checking = false;
+                    match result {
+                        Ok(Some(notice)) => {
+                            if manual || self.update.as_ref() != Some(&notice) {
+                                self.toast(format!("Fastpotify {} is available", notice.version));
+                            }
+                            self.update = Some(notice);
+                        }
+                        Ok(None) => {
+                            self.update = None;
+                            if manual {
+                                self.toast("Fastpotify is up to date");
+                            } else {
+                                log::debug!("this is the newest release");
+                            }
+                        }
+                        Err(error) if manual => {
+                            self.toast_error(format!("Couldn't check for updates: {error}"));
+                        }
+                        Err(error) => {
+                            log::debug!("could not check for a newer release: {error}");
+                        }
                     }
-                    self.update = Some(notice);
                 }
             }
         }
@@ -1821,8 +1841,7 @@ impl App {
                 .last_update_check
                 .is_none_or(|at| at.elapsed() >= crate::updates::CHECK_INTERVAL)
         {
-            self.last_update_check = Some(now);
-            self.backend.send(Command::CheckForUpdates);
+            self.check_for_updates(false);
         }
 
         if self.is_connected() && !self.offline {
@@ -5660,6 +5679,7 @@ impl App {
                     self.backend.send(Command::DiscoverReceivers);
                 }
             }
+            Action::CheckForUpdates => self.check_for_updates(true),
             Action::SettingsChanged => {
                 self.settings_dirty = true;
                 ctx.set_theme(match self.settings.theme {
@@ -5926,6 +5946,15 @@ impl App {
             kind: ToastKind::Error,
             created: Instant::now(),
         });
+    }
+
+    fn check_for_updates(&mut self, manual: bool) {
+        if self.update_checking || self.offline {
+            return;
+        }
+        self.update_checking = true;
+        self.last_update_check = Some(Instant::now());
+        self.backend.send(Command::CheckForUpdates { manual });
     }
 
     fn maybe_suggest_personal_app(&mut self, spotify_slow: bool, now: jiff::Timestamp) {
@@ -8017,6 +8046,76 @@ mod tests {
         );
         app.local_ready = true;
         app
+    }
+
+    #[test]
+    fn a_manual_update_check_reports_its_result() {
+        let mut app = headless_app();
+        app.update = Some(crate::updates::Release {
+            version: "1.2.3".into(),
+            url: "https://github.com/crmne/fastpotify/releases/tag/v1.2.3".into(),
+        });
+        app.update_checking = true;
+        app.handle_backend_events(vec![Event::UpdateChecked {
+            manual: true,
+            result: Ok(None),
+        }]);
+
+        assert!(!app.update_checking);
+        assert_eq!(app.update, None);
+        assert_eq!(
+            app.toasts.last().map(|toast| toast.message.as_str()),
+            Some("Fastpotify is up to date")
+        );
+
+        app.toasts.clear();
+        app.update_checking = true;
+        app.handle_backend_events(vec![Event::UpdateChecked {
+            manual: true,
+            result: Err("GitHub is unavailable".into()),
+        }]);
+
+        assert!(!app.update_checking);
+        assert_eq!(
+            app.toasts.last().map(|toast| toast.message.as_str()),
+            Some("Couldn't check for updates: GitHub is unavailable")
+        );
+        assert_eq!(
+            app.toasts.last().map(|toast| &toast.kind),
+            Some(&ToastKind::Error)
+        );
+    }
+
+    #[test]
+    fn the_daily_update_check_only_announces_a_new_release() {
+        let mut app = headless_app();
+        app.update_checking = true;
+        app.handle_backend_events(vec![Event::UpdateChecked {
+            manual: false,
+            result: Ok(None),
+        }]);
+        assert!(
+            app.toasts.is_empty(),
+            "the current release needs no daily toast"
+        );
+
+        app.update_checking = true;
+        app.handle_backend_events(vec![Event::UpdateChecked {
+            manual: false,
+            result: Ok(Some(crate::updates::Release {
+                version: "1.2.3".into(),
+                url: "https://github.com/crmne/fastpotify/releases/tag/v1.2.3".into(),
+            })),
+        }]);
+
+        assert_eq!(
+            app.update.as_ref().map(|release| release.version.as_str()),
+            Some("1.2.3")
+        );
+        assert_eq!(
+            app.toasts.last().map(|toast| toast.message.as_str()),
+            Some("Fastpotify 1.2.3 is available")
+        );
     }
 
     fn cached_playlist_row(uri: &str) -> crate::api::models::PlaylistItem {

@@ -45,8 +45,9 @@ adds a separate Development Mode quota. See
 - Fastpotify has no telemetry, analytics, or hosted service. When the lyrics
   panel is open and Spotify has no lyrics, it sends the track's artist, title,
   album, and length to [lrclib.net](https://lrclib.net). It also checks
-  api.github.com once a day for updates. You can turn off update checks in
-  Settings.
+  api.github.com once a day for updates. You can turn off automatic checks in
+  Settings, or request one there at any time. On macOS, **Check for Updates**
+  is also in the application menu.
 
 ## When Spotify pushes back
 
