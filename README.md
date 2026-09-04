@@ -182,6 +182,7 @@ those things, and [CONTRIBUTING.md](CONTRIBUTING.md) prohibits them.
 | `Shift+←` / `Shift+→` | Seek 10 seconds |
 | `Ctrl+↑` / `Ctrl+↓` | Volume |
 | `M` | Mute |
+| `K` | Like or unlike the playing song |
 | `S` / `R` | Shuffle / cycle repeat |
 | `Q` | Queue panel |
 | `Ctrl+F` or `/` | Search |

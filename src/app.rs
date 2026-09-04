@@ -2015,6 +2015,11 @@ impl App {
             "next" => self.actions.push(Action::Next),
             "play-pause" => self.actions.push(Action::TogglePlay),
             "mute" => self.actions.push(Action::ToggleMute),
+            "save-toggle" => {
+                if let Some(now) = self.now_playing().filter(|now| !now.is_episode) {
+                    self.actions.push(Action::ToggleSaved(now.uri));
+                }
+            }
             "shuffle" => self.actions.push(Action::ToggleShuffle),
             "volume-up" => self.actions.push(Action::VolumeBy(5)),
             "volume-down" => self.actions.push(Action::VolumeBy(-5)),
@@ -7871,6 +7876,7 @@ mod tests {
             "next",
             "previous",
             "mute",
+            "save-toggle",
             "shuffle",
             "volume-up",
             "volume-down",
@@ -7884,6 +7890,12 @@ mod tests {
             );
         }
 
+        app.actions.clear();
+        app.milkdrop_command("save-toggle");
+        assert!(matches!(
+            app.actions.first(),
+            Some(Action::ToggleSaved(uri)) if uri == "spotify:track:a"
+        ));
         app.actions.clear();
         app.milkdrop_command("next");
         assert!(matches!(app.actions.first(), Some(Action::Next)));
