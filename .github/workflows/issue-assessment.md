@@ -1,15 +1,110 @@
 ---
 name: Copilot issue assessment
-description: Assess new issues and discussions without creating code or pull requests.
+description: Assess each issue and discussion once without creating code or pull requests.
 
 on:
   issues:
     types: [opened, reopened]
   discussion:
     types: [created]
+  workflow_dispatch:
   roles: all
+  permissions:
+    discussions: write
+    issues: write
+  steps:
+    - name: Skip or mark the Copilot assessment
+      id: assessment_needed
+      if: vars.COPILOT_ISSUE_ASSESSMENT_ENABLED == 'true'
+      continue-on-error: true
+      uses: actions/github-script@v9
+      with:
+        script: |
+          let routed = {};
+          try {
+            routed = JSON.parse(context.payload.inputs?.aw_context || "{}");
+          } catch (error) {
+            core.setFailed(`Invalid agentic workflow context: ${error.message}`);
+            return;
+          }
 
-if: vars.COPILOT_ISSUE_ASSESSMENT_ENABLED == 'true'
+          const itemType = context.payload.issue
+            ? "issue"
+            : context.payload.discussion
+              ? "discussion"
+              : routed.item_type;
+          const itemNumber = context.payload.issue?.number
+            || context.payload.discussion?.number
+            || routed.item_number;
+
+          if (!["issue", "discussion"].includes(itemType) || !itemNumber) {
+            core.setFailed("An issue or discussion number is required");
+            return;
+          }
+
+          let reactions;
+          let discussionId;
+          if (itemType === "issue") {
+            reactions = await github.paginate(
+              github.rest.reactions.listForIssue,
+              { ...context.repo, issue_number: itemNumber, per_page: 100 },
+            );
+          } else {
+            const result = await github.graphql(
+              `query($owner: String!, $repo: String!, $number: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  discussion(number: $number) {
+                    id
+                    reactions(first: 100, content: ROCKET) {
+                      nodes { content user { login } }
+                    }
+                  }
+                }
+              }`,
+              { ...context.repo, number: Number(itemNumber) },
+            );
+            const discussion = result.repository.discussion;
+            if (!discussion) {
+              core.setFailed(`Discussion #${itemNumber} was not found`);
+              return;
+            }
+            discussionId = discussion.id;
+            reactions = discussion.reactions.nodes || [];
+          }
+
+          const trustedActors = new Set([context.repo.owner, "github-actions[bot]"]);
+          const alreadyAssessed = reactions.some(reaction =>
+            reaction.content.toLowerCase() === "rocket"
+              && trustedActors.has(reaction.user?.login),
+          );
+
+          if (alreadyAssessed) {
+            core.setFailed(`${itemType} #${itemNumber} was already assessed`);
+            return;
+          }
+
+          if (itemType === "issue") {
+            await github.rest.reactions.createForIssue({
+              ...context.repo,
+              issue_number: itemNumber,
+              content: "rocket",
+            });
+          } else {
+            await github.graphql(
+              `mutation($subjectId: ID!) {
+                addReaction(input: {subjectId: $subjectId, content: ROCKET}) {
+                  reaction { content }
+                }
+              }`,
+              { subjectId: discussionId },
+            );
+          }
+
+concurrency:
+  group: issue-assessment-${{ github.event.issue.number || github.event.discussion.number || fromJSON(github.event.inputs.aw_context || '{}').item_number || github.run_id }}
+  cancel-in-progress: false
+
+if: vars.COPILOT_ISSUE_ASSESSMENT_ENABLED == 'true' && needs.pre_activation.outputs.assessment_needed_result == 'success'
 
 permissions:
   contents: read
